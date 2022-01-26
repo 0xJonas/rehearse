@@ -1,0 +1,14 @@
+{
+    "version": "0.1",
+    "name": "Hello, Test!",
+    "prelaunch": "echo \"prelaunch\"",
+    "command": "echo \"Hello, World!\n\"; echo \"Hello, File!\n\" > output.txt",
+    "postlaunch": "echo \"postlaunch\"",
+    "referenceStdout": "stdout.expected",
+    "artifacts": [
+        {
+            "name": "output.txt",
+            "reference": "output.txt.expected"
+        }
+    ]
+}

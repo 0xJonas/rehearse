@@ -1,0 +1,6 @@
+{
+    "version": "1.0",
+    "name": "Wrong type for artifacts",
+    "command": "echo \"abc\"",
+    "artifacts": 5
+}

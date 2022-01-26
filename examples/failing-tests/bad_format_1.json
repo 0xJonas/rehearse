@@ -1,0 +1,6 @@
+{
+    "version": "0.1",
+    "name": "Nonexistant file",
+    "command": "echo \"abc\"",
+    "referenceStdout": "does_not_exist"
+}

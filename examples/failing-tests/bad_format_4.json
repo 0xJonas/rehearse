@@ -1,0 +1,5 @@
+{
+    "version": "0.1",
+    "name": "No comma on this line"
+    "command": "echo \"abc\""
+}
