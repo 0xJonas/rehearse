@@ -3,7 +3,7 @@ mod test_cases;
 mod cli;
 
 use cli::{Terminal, ColorTerminal, TermColorMode, TermColor, ArgTemplate, Arg, ArgError, ArgResult};
-use test_cases::{discover_test_cases};
+use test_cases::{get_default_test_options, discover_test_cases};
 
 use log::{trace, error, LevelFilter};
 use simplelog::{Config, ConfigBuilder, CombinedLogger, TermLogger, WriteLogger, ColorChoice, TerminalMode};
@@ -216,8 +216,9 @@ fn main() {
         exit(EXIT_CODE_NO_FILES);
     }
 
+    let default_test_options = get_default_test_options();
     for str in arg_result.get_rest() {
-        for test_case in discover_test_cases(str) {
+        for test_case in discover_test_cases(str, &default_test_options) {
             terminal.write(format!("Found test case: {}!\n", test_case.name)).expect("Stdout is broken!!");
         }
         terminal.flush().expect("Stdout is broken!!");
