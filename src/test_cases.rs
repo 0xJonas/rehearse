@@ -356,6 +356,13 @@ pub fn parse_test_case(path: &Path, defaults: &TestOptions) -> Result<TestCase, 
     });
 }
 
+/// Searches for test cases in the given glob pattern and parses them using the
+/// values in `defaults` for any missing test options. Returns a Vec of the
+/// parsed `TestCase`s.
+/// 
+/// This function requires the test case files to be named '`rehearse.json`'. If
+/// any test case files could not be parsed, it is assumed that the file was not
+/// actually a test case and the error is logged but ultimatly ignored.
 pub fn discover_test_cases(files: &str, defaults: &TestOptions) -> Vec<TestCase> {
     trace!("Looking for tests in {}...", files);
 
@@ -403,6 +410,7 @@ pub fn discover_test_cases(files: &str, defaults: &TestOptions) -> Vec<TestCase>
     return test_cases;
 }
 
+/// Any error that can occur when running a `TestCase`.
 #[derive(Debug)]
 pub enum TestCaseError {
     /// Generic message
@@ -431,6 +439,13 @@ impl Display for TestCaseError {
 
 impl Error for TestCaseError {}
 
+/// Constructs a shell command from a `command_string`, with the given `working_directory`
+/// and shell command and arguments from `options`.
+/// 
+/// By default, all standard streams are discarded (e.g. piped into `/dev/null`), so they have
+/// to be reenabled if input/output is to be used.
+/// This function does not actually run the command but merely builds an instance of `tokio::process::Command`
+/// that can be further modified and run later.
 fn build_shell_command(command_string: &str, working_directory: &Path, options: &TestOptions) -> Command {
     let mut command = Command::new(&options.shell);
     command
@@ -444,6 +459,10 @@ fn build_shell_command(command_string: &str, working_directory: &Path, options: 
     return command;
 }
 
+/// Converts the output from `.await`-ing an instance of `tokio::process::Command` into the
+/// appropriate `TestCaseError`.
+/// 
+/// Utility function.
 fn get_error_from_command_result(res: std::io::Result<std::process::ExitStatus>, shell_command: &str, ignore_exit_code: bool) -> Result<(), TestCaseError> {
     match res {
         // Command launched
@@ -466,6 +485,14 @@ fn get_error_from_command_result(res: std::io::Result<std::process::ExitStatus>,
     }
 }
 
+/// Runs the main command of the `test_case`, sending the command's stdout to the
+/// `process_stdout` function and the command's stderr to the `process_stderr` function.
+/// 
+/// The two functions receive the command's output in blocks of bytes. The blocks will
+/// always have at least length 1, but apart from that, no other assumptions should
+/// be made about the content of the blocks. It is especially not guaranteed, that
+/// the blocks will have a consistent length or that the end of a block matches up
+/// with the end of a utf-8 char.
 pub async fn process_test_case_command<A, B>(test_case: &TestCase, mut process_stdout: A, mut process_stderr: B) -> Result<(), TestCaseError>
 where 
     A: FnMut(&[u8]),
@@ -553,6 +580,10 @@ where
     return Ok(()); // TODO replace with resulting diff
 }
 
+/// Processes a single `test_case`.
+/// 
+/// This function runs the prelaunch, command and postlaunch scripts of a 
+/// TestCase in order, returning an error if any of the commands fails.
 pub async fn process_single_test_case(test_case: TestCase) -> Result<(), TestCaseError>{
     trace!("Starting test case {}...", test_case.name);
 
@@ -580,6 +611,7 @@ pub async fn process_single_test_case(test_case: TestCase) -> Result<(), TestCas
     return Ok(());
 }
 
+/// Concurrently processes all given `test_cases`.
 pub async fn process_test_cases(test_cases: Vec<TestCase>) {
     let futures: Vec<tokio::task::JoinHandle<_>> = test_cases.into_iter()
         .map(|tc| tokio::spawn(process_single_test_case(tc)))
