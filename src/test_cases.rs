@@ -3,6 +3,7 @@ use log::{error, trace};
 use serde_json::{Value, from_reader};
 use tokio::process::Command;
 use tokio::io::AsyncReadExt;
+use futures::future::join_all;
 
 use std::path::{Path, PathBuf};
 use std::error::Error;
@@ -408,7 +409,7 @@ pub enum TestCaseError {
     Message(String),
 
     /// A command could not be run
-    LaunchFailed(String),
+    LaunchFailed(std::io::Error),
 
     /// A command returned a non-zero exit code which was not ignored
     NonzeroExit(String),
@@ -421,7 +422,7 @@ impl Display for TestCaseError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             TestCaseError::Message(str) => write!(f, "{}", str),
-            TestCaseError::LaunchFailed(str) => write!(f, "Command \"{}\" failed to launch", str),
+            TestCaseError::LaunchFailed(err) => write!(f, "Command \"{}\" failed to launch", err),
             TestCaseError::NonzeroExit(str) => write!(f, "Command \"{}\" terminated with a non-zero exit code", str),
             TestCaseError::IO(err) => write!(f, "An IO Error occurred: {}", err)
         }
@@ -430,16 +431,12 @@ impl Display for TestCaseError {
 
 impl Error for TestCaseError {}
 
-pub struct RunOptions {
-    pub parallel: bool,
-    pub shell: String
-}
-
-fn build_shell_command(command_string: &str, options: &TestOptions) -> Command {
+fn build_shell_command(command_string: &str, working_directory: &Path, options: &TestOptions) -> Command {
     let mut command = Command::new(&options.shell);
     command
         .args(&options.shell_args)
-        .arg("-C")
+        .current_dir(working_directory)
+        .arg("-c")
         .arg(command_string)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -465,7 +462,7 @@ fn get_error_from_command_result(res: std::io::Result<std::process::ExitStatus>,
         },
 
         // Command failed to launch
-        Err(e) => return Err(TestCaseError::IO(e))
+        Err(e) => return Err(TestCaseError::LaunchFailed(e))
     }
 }
 
@@ -474,7 +471,7 @@ where
     A: FnMut(&[u8]),
     B: FnMut(&[u8])
 {
-    let child_res = build_shell_command(&test_case.command, &test_case.options)
+    let child_res = build_shell_command(&test_case.command, &test_case.working_directory, &test_case.options)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn();
@@ -556,19 +553,19 @@ where
     return Ok(()); // TODO replace with resulting diff
 }
 
-pub async fn process_single_test_case(test_case: &TestCase) -> Result<(), TestCaseError>{
+pub async fn process_single_test_case(test_case: TestCase) -> Result<(), TestCaseError>{
     trace!("Starting test case {}...", test_case.name);
 
     // Run prelaunch script
     if let Some(command) = &test_case.prelaunch {
         trace!("Running prelaunch script for {}...", test_case.name);
-        let res = build_shell_command(command, &test_case.options).status().await;
+        let res = build_shell_command(command, &test_case.working_directory, &test_case.options).status().await;
         get_error_from_command_result(res, command, test_case.options.ignore_exit_code)?;
     }
 
     // Run command
     process_test_case_command(
-        test_case,
+        &test_case,
         |_stdout_bef| {},
         |_stderr_bef| {}
     ).await?;
@@ -576,14 +573,18 @@ pub async fn process_single_test_case(test_case: &TestCase) -> Result<(), TestCa
     // Run postlaunch script
     if let Some(command) = &test_case.postlaunch {
         trace!("Running postlaunch script for {}...", test_case.name);
-        let res = build_shell_command(command, &test_case.options).status().await;
+        let res = build_shell_command(command, &test_case.working_directory, &test_case.options).status().await;
         get_error_from_command_result(res, command, test_case.options.ignore_exit_code)?;
     }
 
     return Ok(());
 }
 
-pub fn process_test_cases(test_cases: &Vec<TestCase>) {
+pub async fn process_test_cases(test_cases: Vec<TestCase>) {
+    let futures: Vec<tokio::task::JoinHandle<_>> = test_cases.into_iter()
+        .map(|tc| tokio::spawn(process_single_test_case(tc)))
+        .collect();
+    let _results = join_all(futures).await;
     
 }
 

@@ -3,3 +3,4 @@ Cargo.lock
 /misc
 .vscode
 *.log
+/examples/output.txt

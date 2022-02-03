@@ -2,7 +2,7 @@
     "version": "0.1",
     "name": "Hello, Test!",
     "prelaunch": "echo \"prelaunch\"",
-    "command": "echo \"Hello, World!\n\"; echo \"Hello, File!\n\" > output.txt",
+    "command": "echo \"Hello, World!\n\"; echo \"Hello, File!\" > output.txt",
     "postlaunch": "echo \"postlaunch\"",
     "referenceStdout": "stdout.expected",
     "artifacts": [

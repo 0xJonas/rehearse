@@ -3,11 +3,12 @@ mod test_cases;
 mod cli;
 
 use cli::{Terminal, ColorTerminal, TermColorMode, TermColor, ArgTemplate, Arg, ArgError, ArgResult};
-use test_cases::{get_default_test_options, discover_test_cases};
+use test_cases::{get_default_test_options, discover_test_cases, process_test_cases};
 
 use log::{trace, error, LevelFilter};
 use simplelog::{Config, ConfigBuilder, CombinedLogger, TermLogger, WriteLogger, ColorChoice, TerminalMode};
 use atty::Stream;
+use tokio::runtime::Builder;
 
 use std::process::{Command, exit};
 use std::path::PathBuf;
@@ -38,6 +39,7 @@ const ARG_VERSION: &'static str = "--version";
 const EXIT_CODE_OK: i32 = 0x0000_0000;
 const EXIT_CODE_NO_FILES: i32 = 0x0000_0001;
 const EXIT_CODE_BAD_ARGS: i32 = 0x0000_0002;
+const EXIT_CODE_NO_RUNTIME: i32 = 0x0000_0003;
 
 fn write_version<T: Terminal>(terminal: &mut T) -> std::io::Result<()> {
     trace!("Printing version...");
@@ -216,11 +218,27 @@ fn main() {
         exit(EXIT_CODE_NO_FILES);
     }
 
-    let default_test_options = get_default_test_options();
-    for str in arg_result.get_rest() {
-        for test_case in discover_test_cases(str, &default_test_options) {
-            terminal.write(format!("Found test case: {}!\n", test_case.name)).expect("Stdout is broken!!");
+    // Initialize tokio runtime
+    // Current build is a single-threaded runtime with
+    // only the IO-driver enabled.
+    let tokio_runtime_res = Builder::new_current_thread()
+        .enable_io()
+        .build();
+    let tokio_runtime = match tokio_runtime_res {
+        Ok(rt) => rt,
+        Err(e) => {
+            error!("Failed to initialize runtime: {}", e);
+            exit(EXIT_CODE_NO_RUNTIME);
         }
-        terminal.flush().expect("Stdout is broken!!");
-    }
+    };
+
+    // Parse test cases
+    let default_test_options = get_default_test_options();
+    let test_cases = arg_result.get_rest().iter()
+        .map(|arg| discover_test_cases(arg, &default_test_options))
+        .flatten()
+        .collect::<Vec<_>>();
+    
+    // Run Tests!
+    tokio_runtime.block_on(process_test_cases(test_cases));
 }
