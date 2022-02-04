@@ -387,9 +387,10 @@ mod test {
                 assert_eq!(test_case.version, "0.1");
                 assert_eq!(test_case.name, "Hello, Test!");
                 assert_eq!(test_case.prelaunch, Some(String::from("echo \"prelaunch\"")));
-                assert_eq!(test_case.command, "echo \"Hello, World!\n\"; echo \"Hello, File!\n\" > output.txt");
+                assert_eq!(test_case.command, "echo \"Hello, World!\"; echo \"Hello, File!\" > output.txt; echo \"Hello, Error!\" >&2");
                 assert_eq!(test_case.postlaunch, Some(String::from("echo \"postlaunch\"")));
                 assert_eq!(test_case.reference_stdout, Some(PathBuf::from("examples/stdout.expected")));
+                assert_eq!(test_case.reference_stderr, Some(PathBuf::from("examples/stderr.expected")));
                 assert_eq!(test_case.artifacts.len(), 1);
                 if let Some(artifact_config) = test_case.artifacts.get(0) {
                     assert_eq!(artifact_config.name, PathBuf::from("examples/output.txt"));

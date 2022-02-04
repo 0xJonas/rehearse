@@ -111,10 +111,12 @@ where
     let mut stdout_buf = Vec::<u8>::with_capacity(test_case.options.buffer_size);
     let mut stdout_offset = 0;
     let mut stdout_open = true;
+    stdout_buf.resize(test_case.options.buffer_size, 0);
 
     let mut stderr_buf = Vec::<u8>::with_capacity(test_case.options.buffer_size);
     let mut stderr_offset = 0;
     let mut stderr_open = true;
+    stderr_buf.resize(test_case.options.buffer_size, 0);
 
     let mut stdout = child.stdout.take().unwrap();
     let mut stderr = child.stderr.take().unwrap();
@@ -131,7 +133,7 @@ where
 
                         if bytes_read == 0 {
                             // 0 bytes read means that the stream was closed
-                            process_stdout(&stdout_buf[..stderr_offset]);
+                            process_stdout(&stdout_buf[..stdout_offset]);
                             stdout_open = false;
                         } else if stdout_offset >= stdout_buf.len() {
                             // Buffer is full, send it to the processing function
@@ -218,4 +220,43 @@ pub async fn process_test_cases(test_cases: Vec<TestCase>) {
         .collect();
     let _results = join_all(futures).await;
     
+}
+
+#[cfg(test)]
+mod tests {
+
+    use super::process_test_case_command;
+    use crate::test_cases::get_default_test_options;
+    use crate::test_cases::parser::parse_test_case;
+
+    use std::path::PathBuf;
+
+    #[tokio::test]
+    async fn process_test_case_command_captures_standard_streams() {
+        let test_case = parse_test_case(&PathBuf::from("examples/rehearse.json"), &get_default_test_options()).unwrap();
+
+        let stdout_expected = "Hello, World!\n";
+        let mut stdout_actual = Vec::<u8>::with_capacity(stdout_expected.len());
+
+        let stderr_expected = "Hello, Error!\n";
+        let mut stderr_actual = Vec::<u8>::with_capacity(stderr_expected.len());
+
+        process_test_case_command(
+            &test_case,
+            |buf| {
+                println!("{}", buf.len());
+                for b in buf {
+                    stdout_actual.push(*b);
+                }
+            },
+            |buf| {
+                for b in buf {
+                    stderr_actual.push(*b);
+                }
+            },
+        ).await.unwrap();
+
+        assert_eq!(String::from_utf8(stdout_actual).unwrap(), stdout_expected, "Error in stdout capture");
+        assert_eq!(String::from_utf8(stderr_actual).unwrap(), stderr_expected, "Error in stdout capture");
+    }
 }

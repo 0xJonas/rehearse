@@ -2,9 +2,10 @@
     "version": "0.1",
     "name": "Hello, Test!",
     "prelaunch": "echo \"prelaunch\"",
-    "command": "echo \"Hello, World!\n\"; echo \"Hello, File!\" > output.txt",
+    "command": "echo \"Hello, World!\"; echo \"Hello, File!\" > output.txt; echo \"Hello, Error!\" >&2",
     "postlaunch": "echo \"postlaunch\"",
     "referenceStdout": "stdout.expected",
+    "referenceStderr": "stderr.expected",
     "artifacts": [
         {
             "name": "output.txt",
