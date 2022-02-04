@@ -3,7 +3,9 @@ mod test_cases;
 mod cli;
 
 use cli::{Terminal, ColorTerminal, TermColorMode, TermColor, ArgTemplate, Arg, ArgError, ArgResult};
-use test_cases::{get_default_test_options, discover_test_cases, process_test_cases};
+use test_cases::get_default_test_options;
+use test_cases::parser::discover_test_cases;
+use test_cases::runner::process_test_cases;
 
 use log::{trace, error, LevelFilter};
 use simplelog::{Config, ConfigBuilder, CombinedLogger, TermLogger, WriteLogger, ColorChoice, TerminalMode};
