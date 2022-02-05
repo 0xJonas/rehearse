@@ -9,22 +9,25 @@ use std::fmt::Display;
 /// Indices into the color palette for terminal colors
 #[derive(Debug, Clone, Copy)]
 pub enum TermColor {
-    /// The primary text color
-    Primary,
+    /// Text highlight color
+    Highlight,
 
-    /// The secondary text color
-    Secondary,
+    /// Warning Color
+    Warning,
 
-    /// The foreground color for added text in a diff view
+    /// Error Color
+    Error,
+
+    /// Foreground color for added text in a diff view
     DiffAdded,
 
-    /// The background color for added text in a diff view
+    /// Background color for added text in a diff view
     DiffAddedBg,
 
-    /// The foreground color for deleted text in a diff view
+    /// Foreground color for deleted text in a diff view
     DiffDeleted,
 
-    /// The background color for deleted text in a diff view
+    /// Background color for deleted text in a diff view
     DiffDeletedBg
 }
 
@@ -43,9 +46,10 @@ pub enum TermColorMode {
 }
 
 /// Color palette when using 256 Ansi-color mode.
-const PALETTE_256: [Color; 6] = [
-    Color::AnsiValue(39),   // Primary: rgb(0,175,255)
-    Color::AnsiValue(129),  // Secondary: rgb(175,0,255)
+const PALETTE_256: [Color; 7] = [
+    Color::AnsiValue(39),   // Highlight: rgb(0,175,255)
+    Color::AnsiValue(221),  // Warning: rgb(255, 215, 95)
+    Color::AnsiValue(196),  // Error: rgb(255, 0, 0)
     Color::AnsiValue(48),   // DiffAdded: rgb(0,255,135)
     Color::AnsiValue(23),   // DiffAddedBg: rgb(0,95,95)
     Color::AnsiValue(205),  // DiffDeleted: rgb(255,95,175)
@@ -53,9 +57,10 @@ const PALETTE_256: [Color; 6] = [
 ];
 
 /// Color palette when using 8-color + intensity mode
-const PALETTE_8: [Color; 6] = [
-    Color::Cyan,        // Primary
-    Color::Magenta,     // Secondary
+const PALETTE_8: [Color; 7] = [
+    Color::Cyan,        // Highlight
+    Color::Yellow,      // Warning
+    Color::Red,         // Error
     Color::Green,       // DiffAdded
     Color::DarkGreen,   // DiffAddedBg
     Color::Red,         // DiffDeleted
@@ -106,14 +111,15 @@ impl ColorTerminal {
 
     /// Utility function to return a color from a color palette by using
     /// a TermColor as an index.
-    fn get_color_from_palette(palette: &[Color; 6], color: &TermColor) -> Color {
+    fn get_color_from_palette(palette: &[Color; 7], color: &TermColor) -> Color {
         match color {
-            TermColor::Primary => palette[0],
-            TermColor::Secondary => palette[1],
-            TermColor::DiffAdded => palette[2],
-            TermColor::DiffAddedBg => palette[3],
-            TermColor::DiffDeleted => palette[4],
-            TermColor::DiffDeletedBg => palette[5]
+            TermColor::Highlight => palette[0],
+            TermColor::Warning => palette[1],
+            TermColor::Error => palette[2],
+            TermColor::DiffAdded => palette[3],
+            TermColor::DiffAddedBg => palette[4],
+            TermColor::DiffDeleted => palette[5],
+            TermColor::DiffDeletedBg => palette[6]
         }
     }
 }
@@ -468,7 +474,7 @@ impl ArgTemplate {
             // Indentation
             write_blanks(terminal, indentation)?;
 
-            terminal.set_color_fg(&TermColor::Primary)?;
+            terminal.set_color_fg(&TermColor::Highlight)?;
 
             // Short argument name
             match &arg.short {
@@ -495,7 +501,7 @@ impl ArgTemplate {
                 }
             }
 
-            terminal.set_color_fg(&TermColor::Secondary)?;
+            terminal.reset_color()?;
 
             // Description
             let description_lines = wrap_lines(&arg.description, term_len - description_start_col);

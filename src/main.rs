@@ -192,8 +192,7 @@ fn main() {
 
     // Setup logging
     if let Err(e) = setup_logging(&arg_result, color_mode) {
-        terminal.set_color_fg(&TermColor::DiffDeleted).expect("Stdout is broken!!");
-        terminal.set_color_bg(&TermColor::DiffDeletedBg).expect("Stdout is broken!!");
+        terminal.set_color_fg(&TermColor::Error).expect("Stdout is broken!!");
         terminal.write(format!("Error setting up logging: {}\n", e)).expect("Stdout is broken!!");
         terminal.reset_color().expect("Stdout is broken!!");
         terminal.flush().expect("Stdout is broken!!");
