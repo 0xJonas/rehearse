@@ -220,10 +220,9 @@ fn main() {
     }
 
     // Initialize tokio runtime
-    // Current build is a single-threaded runtime with
-    // only the IO-driver enabled.
     let tokio_runtime_res = Builder::new_current_thread()
         .enable_io()
+        .enable_time()
         .build();
     let tokio_runtime = match tokio_runtime_res {
         Ok(rt) => rt,
@@ -241,5 +240,5 @@ fn main() {
         .collect::<Vec<_>>();
     
     // Run Tests!
-    tokio_runtime.block_on(process_test_cases(test_cases));
+    tokio_runtime.block_on(process_test_cases(test_cases, terminal.clone()));
 }

@@ -1,5 +1,6 @@
 pub mod parser;
 pub mod runner;
+mod reporter;
 
 use std::path::PathBuf;
 

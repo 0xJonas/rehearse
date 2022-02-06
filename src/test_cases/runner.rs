@@ -1,6 +1,8 @@
 use super::{TestCase, TestOptions};
+use crate::test_cases::reporter::{ProgressReporter, DefaultProgressReporter};
+use crate::cli::{Terminal};
 
-use log::trace;
+use log::{trace, error};
 use tokio::process::Command;
 use tokio::io::AsyncReadExt;
 use futures::future::join_all;
@@ -9,6 +11,7 @@ use std::path::Path;
 use std::fmt::{Display, Formatter};
 use std::error::Error;
 use std::process::Stdio;
+use std::sync::{Mutex, Arc};
 
 /// Any error that can occur when running a `TestCase`.
 #[derive(Debug)]
@@ -186,9 +189,11 @@ where
 /// 
 /// This function runs the prelaunch, command and postlaunch scripts of a 
 /// TestCase in order, returning an error if any of the commands fails.
-pub async fn process_single_test_case(test_case: TestCase) -> Result<(), TestCaseError>{
+pub async fn process_single_test_case<P: ProgressReporter>(test_case: TestCase, progress_reporter: Arc<Mutex<P>>) -> Result<(), TestCaseError>{
     trace!("Starting test case {}...", test_case.name);
 
+    progress_reporter.lock().unwrap().set_test_case_state(&test_case, crate::test_cases::reporter::State::Running);
+    
     // Run prelaunch script
     if let Some(command) = &test_case.prelaunch {
         trace!("Running prelaunch script for {}...", test_case.name);
@@ -210,16 +215,58 @@ pub async fn process_single_test_case(test_case: TestCase) -> Result<(), TestCas
         get_error_from_command_result(res, command, test_case.options.ignore_exit_code)?;
     }
 
+    progress_reporter.lock().unwrap().set_test_case_state(&test_case, crate::test_cases::reporter::State::Passed);
     return Ok(());
 }
 
 /// Concurrently processes all given `test_cases`.
-pub async fn process_test_cases(test_cases: Vec<TestCase>) {
+pub async fn process_test_cases<T>(test_cases: Vec<TestCase>, mut terminal: T) -> ()
+where
+    T: Terminal + Send + Clone + 'static
+{
+    let progress_reporter_mutex = Arc::new(Mutex::new(DefaultProgressReporter::new()));
+
+    // Clone of the progress_reporter_mutex that gets moved into the
+    // coroutine. Because the ProgressReporter lives behind an Arc,
+    // the clone is actually just another reference to the same object.
+    let c_progress_reporter_mutex = progress_reporter_mutex.clone();
+
+    // Same thing with the terminal
+    let mut c_terminal = terminal.clone();
+
+    // Setup progress reporter. The progress reporter will receive updates from
+    // the TestCase processes and print the current state to the terminal every 30ms.
+    let progress_reporter_coro = tokio::spawn(async move {
+        let mut delay = tokio::time::interval(tokio::time::Duration::from_millis(30));
+        loop {
+            // The first await will complete immediately, so put it at the front of the loop.
+            delay.tick().await;
+            let mut progress_reporter_lock = c_progress_reporter_mutex.lock().unwrap();
+            progress_reporter_lock
+                .write_status(&mut c_terminal)
+                .unwrap_or_else(|e| error!("Error writing progress report: {}", e));
+            progress_reporter_lock.clear_changes();
+        }
+    });
+    
+    // Run all test_cases
     let futures: Vec<tokio::task::JoinHandle<_>> = test_cases.into_iter()
-        .map(|tc| tokio::spawn(process_single_test_case(tc)))
+        .map(|tc| {
+            let c_progress_reporter_mutex = progress_reporter_mutex.clone();
+            tokio::spawn(process_single_test_case(tc, c_progress_reporter_mutex))
+        })
         .collect();
     let _results = join_all(futures).await;
-    
+
+    // Stop the progress reporter coroutine
+    progress_reporter_coro.abort();
+
+    // Write a final status line
+    progress_reporter_mutex.lock().unwrap()
+        .write_status(&mut terminal)
+        .unwrap_or_else(|e| error!("Error writing progress report: {}", e));
+    terminal.write("\n")
+        .unwrap_or_else(|e| error!("Error writing progress report: {}", e));
 }
 
 #[cfg(test)]

@@ -5,6 +5,7 @@ use crossterm::style::{Print, SetForegroundColor, SetBackgroundColor, Color};
 use std::collections::HashMap;
 use std::io::Write;
 use std::fmt::Display;
+use std::sync::Arc;
 
 /// Indices into the color palette for terminal colors
 #[derive(Debug, Clone, Copy)]
@@ -92,8 +93,9 @@ pub trait Terminal {
 }
 
 /// Represents a terminal that may or may not be able to display color.
+#[derive(Clone)]
 pub struct ColorTerminal {
-    stdout: std::io::Stdout,
+    stdout: Arc<std::io::Stdout>,
     color_mode: TermColorMode
 }
 
@@ -104,7 +106,7 @@ impl ColorTerminal {
     /// is actually supported.
     pub fn new(color_mode: TermColorMode) -> ColorTerminal {
         ColorTerminal {
-            stdout: std::io::stdout(),
+            stdout: Arc::new(std::io::stdout()),
             color_mode: color_mode
         }
     }
@@ -138,7 +140,7 @@ impl Terminal for ColorTerminal {
             TermColorMode::C8 => ColorTerminal::get_color_from_palette(&PALETTE_8, color)
         };
 
-        match self.stdout.queue(SetForegroundColor(palette_color)) {
+        match self.stdout.lock().queue(SetForegroundColor(palette_color)) {
             Ok(_) => Ok(()),
             Err(e) => Err(e)
         }
@@ -151,31 +153,40 @@ impl Terminal for ColorTerminal {
             TermColorMode::C8 => ColorTerminal::get_color_from_palette(&PALETTE_8, color)
         };
 
-        match self.stdout.queue(SetBackgroundColor(palette_color)) {
+        match self.stdout.lock().queue(SetBackgroundColor(palette_color)) {
             Ok(_) => Ok(()),
             Err(e) => Err(e)
         }
     }
 
     fn reset_color(&mut self) -> std::io::Result<()> {
-        if let Err(e) = self.stdout.queue(SetForegroundColor(Color::Reset)) {
+        let mut stdout_lock = self.stdout.lock();
+        if let Err(e) = stdout_lock.queue(SetForegroundColor(Color::Reset)) {
             return Err(e);
         }
-        if let Err(e) = self.stdout.queue(SetBackgroundColor(Color::Reset)) {
+        if let Err(e) = stdout_lock.queue(SetBackgroundColor(Color::Reset)) {
             return Err(e);
         }
         return Ok(());
     }
 
     fn write<D: Display>(&mut self, buf: D) -> std::io::Result<()> {
-        match self.stdout.queue(Print(buf)) {
+        match self.stdout.lock().queue(Print(buf)) {
             Ok(_) => Ok(()),
             Err(e) => Err(e)
         }
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
-        self.stdout.flush()
+        self.stdout.lock().flush()
+    }
+}
+
+impl Drop for ColorTerminal {
+
+    /// Reset the terminal colors when the terminal is dropped.
+    fn drop(&mut self) {
+        self.reset_color().unwrap_or(());   // Ignore result
     }
 }
 
