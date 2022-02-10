@@ -1,5 +1,5 @@
 use super::{TestCase, TestOptions};
-use crate::test_cases::reporter::{ProgressReporter, DefaultProgressReporter};
+use crate::test_cases::reporter::{ProgressReporter, DefaultProgressReporter, State};
 use crate::cli::{Terminal};
 
 use log::{trace, error};
@@ -198,7 +198,13 @@ pub async fn process_single_test_case<P: ProgressReporter>(test_case: TestCase, 
     if let Some(command) = &test_case.prelaunch {
         trace!("Running prelaunch script for {}...", test_case.name);
         let res = build_shell_command(command, &test_case.working_directory, &test_case.options).status().await;
-        get_error_from_command_result(res, command, test_case.options.ignore_exit_code)?;
+
+        get_error_from_command_result(res, command, test_case.options.ignore_exit_code)
+            .map_err(|err| {
+                progress_reporter.lock().unwrap()
+                    .set_test_case_state(&test_case, State::Error(format!("{}", err)));
+                err
+            })?;
     }
 
     // Run command
@@ -206,13 +212,24 @@ pub async fn process_single_test_case<P: ProgressReporter>(test_case: TestCase, 
         &test_case,
         |_stdout_bef| {},
         |_stderr_bef| {}
-    ).await?;
+    ).await
+    .map_err(|err| {
+        progress_reporter.lock().unwrap()
+            .set_test_case_state(&test_case, State::Error(format!("{}", err)));
+        err
+    })?;
 
     // Run postlaunch script
     if let Some(command) = &test_case.postlaunch {
         trace!("Running postlaunch script for {}...", test_case.name);
         let res = build_shell_command(command, &test_case.working_directory, &test_case.options).status().await;
-        get_error_from_command_result(res, command, test_case.options.ignore_exit_code)?;
+        
+        get_error_from_command_result(res, command, test_case.options.ignore_exit_code)
+            .map_err(|err| {
+                progress_reporter.lock().unwrap()
+                    .set_test_case_state(&test_case, State::Error(format!("{}", err)));
+                err
+            })?;
     }
 
     progress_reporter.lock().unwrap().set_test_case_state(&test_case, crate::test_cases::reporter::State::Passed);

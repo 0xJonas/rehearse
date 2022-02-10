@@ -131,7 +131,7 @@ impl ProgressReporter for DefaultProgressReporter {
                 State::Error(_) => (running, pending, passed, failed, error + 1)
             });
         terminal.set_color_fg(&TermColor::Highlight)?;
-        terminal.write(format!("<< Status: {} running, {} pending, {} passed, {} failed, {} errors >>", running, pending, passed, failed, error))?;
+        terminal.write(format!("<< Status: {} running, {} pending, {} passed, {} failed, {} error(s) >>", running, pending, passed, failed, error))?;
         // Move cursor back to the left, so the status line does not stay on screen
         // when another coroutine writes to the terminal.
         terminal.write("\r")?;
