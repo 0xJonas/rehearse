@@ -1,0 +1,8 @@
+{
+    "version": "0.1",
+    "name": "Should error",
+    "command": "python run.py",
+    "options": {
+        "ignoreExitCode": false
+    }
+}

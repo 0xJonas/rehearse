@@ -1,0 +1,6 @@
+{
+    "version": "0.1",
+    "name": "Fizz-Buzz",
+    "command": "python run.py 30",
+    "referenceStdout": "stdout.expected"
+}

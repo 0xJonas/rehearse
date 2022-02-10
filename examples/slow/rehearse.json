@@ -1,0 +1,6 @@
+{
+    "version": "0.1",
+    "name": "Slow Test",
+    "command": "python run.py 4",
+    "referenceStdout": "stdout.expected"
+}

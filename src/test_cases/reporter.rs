@@ -1,6 +1,8 @@
 use super::{TestCase};
 use crate::cli::{Terminal, TermColor, write_blanks};
 
+use log::trace;
+
 use std::collections::HashMap;
 
 /// States that a `TestCase` can be in during or after execution.
@@ -70,8 +72,18 @@ impl ProgressReporter for DefaultProgressReporter {
     fn set_test_case_state(&mut self, test_case: &TestCase, state: State) {
         // TODO: check if the given TestCase was actually registered and do something
         // if it wasn't.
+        match state {
+            State::Pending => trace!("Test case {} is pending", test_case.name),
+            State::Running => trace!("Test case {} is running", test_case.name),
+            State::Passed => trace!("Test case {} passed", test_case.name),
+            State::Diff => trace!("Test case {} has a diff", test_case.name),
+            State::Error(ref msg) => trace!("Test case {} encountered an error: {}", test_case.name, msg)
+        }
+
         self.states.insert(test_case.name.clone(), state);
-        self.changed_test_cases.push(test_case.name.clone());
+        if !self.changed_test_cases.contains(&test_case.name) {
+            self.changed_test_cases.push(test_case.name.clone());
+        }
     }
     
     fn write_status<T: Terminal>(&self, terminal: &mut T) -> std::io::Result<()> {
