@@ -371,30 +371,33 @@ mod test {
     #[test]
     fn test_discover_test_cases() {
         let defaults = get_default_test_options();
-        let mut tests = discover_test_cases("examples/*", &defaults);
+        let mut tests = discover_test_cases("examples/**/rehearse.json", &defaults);
         tests.sort_by_key(|tc| tc.name.clone());
-        assert_eq!(tests.len(), 1);
+        assert_eq!(tests.len(), 4);
 
         // Test cases in lexicographical order
-        assert_eq!(tests[0].name, "Hello, Test!");
+        assert_eq!(tests[0].name, "Fizz-Buzz");
+        assert_eq!(tests[1].name, "Hello, Test!");
+        assert_eq!(tests[2].name, "Should error");
+        assert_eq!(tests[3].name, "Slow Test");
     }
 
     #[test]
     fn parse_test_case_hello_world() {
         let defaults = get_default_test_options();
-        match parse_test_case(&PathBuf::from("examples/rehearse.json"), &defaults) {
+        match parse_test_case(&PathBuf::from("examples/hello-world/rehearse.json"), &defaults) {
             Ok(test_case) => {
                 assert_eq!(test_case.version, "0.1");
                 assert_eq!(test_case.name, "Hello, Test!");
                 assert_eq!(test_case.prelaunch, Some(String::from("echo \"prelaunch\"")));
                 assert_eq!(test_case.command, "echo \"Hello, World!\"; echo \"Hello, File!\" > output.txt; echo \"Hello, Error!\" >&2");
                 assert_eq!(test_case.postlaunch, Some(String::from("echo \"postlaunch\"")));
-                assert_eq!(test_case.reference_stdout, Some(PathBuf::from("examples/stdout.expected")));
-                assert_eq!(test_case.reference_stderr, Some(PathBuf::from("examples/stderr.expected")));
+                assert_eq!(test_case.reference_stdout, Some(PathBuf::from("examples/hello-world/stdout.expected")));
+                assert_eq!(test_case.reference_stderr, Some(PathBuf::from("examples/hello-world/stderr.expected")));
                 assert_eq!(test_case.artifacts.len(), 1);
                 if let Some(artifact_config) = test_case.artifacts.get(0) {
-                    assert_eq!(artifact_config.name, PathBuf::from("examples/output.txt"));
-                    assert_eq!(artifact_config.reference, PathBuf::from("examples/output.txt.expected"));
+                    assert_eq!(artifact_config.name, PathBuf::from("examples/hello-world/output.txt"));
+                    assert_eq!(artifact_config.reference, PathBuf::from("examples/hello-world/output.txt.expected"));
                     assert_eq!(artifact_config.encoding, "utf-8");
                     assert_eq!(artifact_config.is_binary_file, false);
                 } else {
@@ -411,7 +414,7 @@ mod test {
     #[test]
     fn parse_test_case_bad_format_1() {
         let defaults = get_default_test_options();
-        match parse_test_case(&PathBuf::from("examples/failing-tests/bad_format_1.json"), &defaults) {
+        match parse_test_case(&PathBuf::from("examples/bad-formats/bad_format_1.json"), &defaults) {
             Ok(_) => assert!(false, "Test case with invalid format should not parse."),
             Err(e) => match e {
                 ParseError::BadContent(msg) => assert_eq!(msg, "File does_not_exist not found"),
@@ -423,7 +426,7 @@ mod test {
     #[test]
     fn parse_test_case_bad_format_2() {
         let defaults = get_default_test_options();
-        match parse_test_case(&PathBuf::from("examples/failing-tests/bad_format_2.json"), &defaults) {
+        match parse_test_case(&PathBuf::from("examples/bad-formats/bad_format_2.json"), &defaults) {
             Ok(_) => assert!(false, "Test case with invalid format should not parse."),
             Err(e) => match e {
                 ParseError::BadContent(msg) => assert_eq!(msg, "Field \"artifacts\" must be an array of objects"),
@@ -435,7 +438,7 @@ mod test {
     #[test]
     fn parse_test_case_bad_format_3() {
         let defaults = get_default_test_options();
-        match parse_test_case(&PathBuf::from("examples/failing-tests/bad_format_3.json"), &defaults) {
+        match parse_test_case(&PathBuf::from("examples/bad-formats/bad_format_3.json"), &defaults) {
             Ok(_) => assert!(false, "Test case with invalid format should not parse."),
             Err(e) => match e {
                 ParseError::BadContent(msg) => assert_eq!(msg, "Missing required field \"version\""),
@@ -447,7 +450,7 @@ mod test {
     #[test]
     fn parse_test_case_bad_format_4() {
         let defaults = get_default_test_options();
-        match parse_test_case(&PathBuf::from("examples/failing-tests/bad_format_4.json"), &defaults) {
+        match parse_test_case(&PathBuf::from("examples/bad-formats/bad_format_4.json"), &defaults) {
             Ok(_) => assert!(false, "Test case with invalid format should not parse."),
             Err(e) => match e {
                 ParseError::JSONError(_) => {},

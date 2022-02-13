@@ -297,7 +297,7 @@ mod tests {
 
     #[tokio::test]
     async fn process_test_case_command_captures_standard_streams() {
-        let test_case = parse_test_case(&PathBuf::from("examples/rehearse.json"), &get_default_test_options()).unwrap();
+        let test_case = parse_test_case(&PathBuf::from("examples/hello-world/rehearse.json"), &get_default_test_options()).unwrap();
 
         let stdout_expected = "Hello, World!\n";
         let mut stdout_actual = Vec::<u8>::with_capacity(stdout_expected.len());
