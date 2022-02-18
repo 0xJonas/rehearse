@@ -572,7 +572,8 @@ impl ArgTemplate {
     pub fn parse_args<T>(&self, args_iter: T) -> Result<ArgResult, ArgError>
     where
         T: IntoIterator,
-        T::Item: AsRef<str> {
+        T::Item: AsRef<str>
+    {
         let mut iter = args_iter.into_iter().skip(1);
         let mut out = ArgResult::new();
 

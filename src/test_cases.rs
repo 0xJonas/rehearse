@@ -1,6 +1,10 @@
-pub mod parser;
-pub mod runner;
+mod parser;
+mod runner;
 mod reporter;
+
+pub use parser::*;
+pub use runner::*;
+pub use reporter::*;
 
 use std::path::PathBuf;
 

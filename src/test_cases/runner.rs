@@ -96,7 +96,7 @@ fn get_error_from_command_result(res: std::io::Result<std::process::ExitStatus>,
 /// be made about the content of the blocks. It is especially not guaranteed, that
 /// the blocks will have a consistent length or that the end of a block matches up
 /// with the end of a utf-8 char.
-pub async fn process_test_case_command<A, B>(test_case: &TestCase, mut process_stdout: A, mut process_stderr: B) -> Result<(), TestCaseError>
+async fn process_test_case_command<A, B>(test_case: &TestCase, mut process_stdout: A, mut process_stderr: B) -> Result<(), TestCaseError>
 where 
     A: FnMut(&[u8]),
     B: FnMut(&[u8])

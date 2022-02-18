@@ -24,60 +24,72 @@ async fn read_to_buffer<R: AsyncReadExt + Unpin>(buffer: &mut [u8], input: &mut 
     }
 }
 
+/// Data source which decodes an input and returns UTF-8 characters.
 struct AsyncCharSource<R: AsyncReadExt + Unpin> {
-    /// Remaining undecoded characters from the last call to refill_buffer
-    decode_strip: Vec<u8>,
+    read_buffer: Vec<u8>,
+    decode_strip_len: usize,
     decoder: Decoder,
     input: R
 }
 
 impl<R: AsyncReadExt + Unpin> AsyncCharSource<R> {
 
-    fn new(decoder: Decoder, input: R) -> AsyncCharSource<R> {
+    /// Creates a new `AsyncCharSource` from the given `input`, using a `decoder` and a read buffer
+    /// of size `buffer_size`.
+    fn new(decoder: Decoder, input: R, buffer_size: usize) -> AsyncCharSource<R> {
+        let mut read_buffer = Vec::with_capacity(buffer_size);
+        read_buffer.resize(buffer_size, 0);
         AsyncCharSource {
-            decode_strip: Vec::with_capacity(4),
+            read_buffer: read_buffer,
+            decode_strip_len: 0,
             decoder: decoder,
             input: input
         }
     }
 
+    /// Appends characters from the source to the given `buffer`. Returns `true`
+    /// if the source has been depleted by the call.
+    /// 
+    /// This function will append as many characters as the buffer can hold
+    /// without reallocating (i.e. until `buffer.capacity()` is reached), or until
+    /// the source is depleted.
     async fn append_chars(&mut self, buffer: &mut Vec<char>) -> std::io::Result<bool> {
-        // Read new data
-        let byte_buffer_size = buffer.capacity() * 4;
-        let mut byte_buffer = Vec::<u8>::with_capacity(byte_buffer_size);
-        byte_buffer.append(&mut self.decode_strip);
-        byte_buffer.resize(byte_buffer_size, 0);
-        let bytes_read = read_to_buffer(&mut byte_buffer[..], &mut self.input).await?;
-        let end_of_input = bytes_read < byte_buffer_size;
+        let read_buffer_len = self.read_buffer.len();
+        let iterations = (buffer.capacity() + read_buffer_len - 1) / read_buffer_len;
+        let mut utf8_buffer = String::with_capacity(read_buffer_len);
+        let mut end_of_input = false;
 
-        // Decode new data
-        let mut utf8_buffer = String::with_capacity(bytes_read);
-        let (res, bytes_decoded) = self.decoder.decode_to_string_without_replacement(&byte_buffer, &mut utf8_buffer, bytes_read != BUFFER_REFILL_AMOUNT);
+        for _ in 0..iterations {
+            // Read new data
+            let bytes_read = read_to_buffer(&mut self.read_buffer[self.decode_strip_len..], &mut self.input).await?;
+            end_of_input = bytes_read < self.read_buffer.len();
 
-        // Return an error if the data could not be decoded
-        if let encoding_rs::DecoderResult::Malformed(bad_bytes, _) = res {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!(
-                    "Could not decode {:?} as valid {}",
-                    Vec::from(&byte_buffer[bytes_decoded .. bytes_decoded + bad_bytes as usize]),
-                    self.decoder.encoding().name()
-                )
-            ))
+            // Decode new data
+            let (res, bytes_decoded) = self.decoder.decode_to_string_without_replacement(&self.read_buffer[..bytes_read], &mut utf8_buffer, end_of_input);
+
+            // Return an error if the data could not be decoded
+            if let encoding_rs::DecoderResult::Malformed(bad_bytes, _) = res {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "Could not decode {:?} as valid {}",
+                        Vec::from(&self.read_buffer[bytes_decoded .. bytes_decoded + bad_bytes as usize]),
+                        self.decoder.encoding().name()
+                    )
+                ))
+            }
+
+            // Write decode strip to the struct
+            self.read_buffer.copy_within(bytes_decoded..bytes_read, 0);
+            self.decode_strip_len = bytes_read - bytes_decoded;
+
+            // Write new characters to the buffer
+            for c in utf8_buffer.chars() {
+                buffer.push(c);
+            }
+            utf8_buffer.clear();
         }
 
-        // Write decode strip to the struct
-        for b in &byte_buffer[bytes_decoded..] {
-            self.decode_strip.push(*b);
-        }
-        
-        // Write new characters to the buffer
-        for c in utf8_buffer.chars() {
-            buffer.push(c);
-        }
-
-        // Cannot use ut8_buffer.len() here, because that would return the length in bytes,
-        // and not the number of characters.
         return Ok(end_of_input);
     }
 }
@@ -90,49 +102,61 @@ enum ProtoGrapheme {
     ProtoExpression(String)
 }
 
+/// Iterator-like object which creates the first stage of Graphemes from a data source.
 struct ProtoGraphemeIterator<R: AsyncReadExt + Unpin> {
     buffer: Vec<char>,
     buffer_pos: usize,
     delimiter_tag: Vec<char>,
     source: AsyncCharSource<R>,
+    end_of_input: bool
 }
 
 impl<R: AsyncReadExt + Unpin> ProtoGraphemeIterator<R> {
 
-    fn new(source: AsyncCharSource<R>, delimiter_tag: &str) -> ProtoGraphemeIterator<R> {
+    /// Creates a new `ProtoGraphemeIterator` from the given `AsyncCharSource`,
+    /// which parses using `delimiter_tag` and has an internal buffer size of `char_buffer_size`.
+    fn new(source: AsyncCharSource<R>, delimiter_tag: &str, char_buffer_size: usize) -> ProtoGraphemeIterator<R> {
         ProtoGraphemeIterator {
-            buffer: Vec::with_capacity(BUFFER_REFILL_AMOUNT),
+            buffer: Vec::with_capacity(char_buffer_size),
             buffer_pos: 0,
             delimiter_tag: delimiter_tag.chars().collect(),
-            source: source
+            source: source,
+            end_of_input: false
         }
     }
 
-    async fn refill_buffer(&mut self) -> std::io::Result<bool> {
+    /// Refills the internal buffer by discarding already read data and
+    /// filling the remaining space with new data.
+    /// 
+    /// This function resets `buffer_pos` to 0.
+    async fn top_up_buffer(&mut self) -> std::io::Result<()> {
         // Move remaining content in buffer to the beginning
         let tail_len = self.buffer.len() - self.buffer_pos;
         self.buffer.copy_within(self.buffer_pos.. , 0);
         self.buffer.truncate(tail_len);
         self.buffer_pos = 0;
 
-        let end_of_input = self.source.append_chars(&mut self.buffer).await?;
+        self.end_of_input = self.source.append_chars(&mut self.buffer).await?;
 
-        return Ok(end_of_input);
+        return Ok(());
     }
 
-    async fn peek_char(&mut self, offset: usize) -> std::io::Result<Option<char>> {
-        if self.buffer_pos + offset >= self.buffer.len() {
-            self.refill_buffer().await?;
-        }
-
+    /// Returns the char that is `offset` ahead of the iterator's current pointer or None if
+    /// if the offset would reach past the end of the internal buffer.
+    /// 
+    /// This function should be used instead of using `buffer_pos` directly, because
+    /// `buffer_pos` can be changed by other functions.
+    fn peek_char(&mut self, offset: usize) -> Option<char> {
         if self.buffer_pos + offset < self.buffer.len() {
             let out = self.buffer[self.buffer_pos + offset];
-            return Ok(Some(out));
+            return Some(out);
         } else {
-            return Ok(None);
+            return None;
         }
     }
 
+    /// Utility function that returns the supplied Option<char> and advances the iterator's
+    /// pointer if the contents of the Option is Some(...).
     fn advance_pos_and_return(&mut self, opt_char: Option<char>) -> std::io::Result<Option<ProtoGrapheme>> {
         match opt_char {
             Some(t) => {
@@ -143,6 +167,8 @@ impl<R: AsyncReadExt + Unpin> ProtoGraphemeIterator<R> {
         }
     }
 
+    /// Returns the next Protographeme from this iterator, Ok(None) if the 
+    /// iterator is depleted, or an error if the next ProtoGrapheme could not be read.
     async fn next(&mut self) -> std::io::Result<Option<ProtoGrapheme>> {
         fn match_char(opt_char: Option<char>, c: char) -> bool {
             if let Some(t) = opt_char {
@@ -152,18 +178,29 @@ impl<R: AsyncReadExt + Unpin> ProtoGraphemeIterator<R> {
             }
         }
 
+        // Refresh buffer if it has been read completely
+        if self.buffer_pos >= self.buffer.len() && !self.end_of_input {
+            self.top_up_buffer().await?;
+        }
+
         let mut offset = 0;
 
         // match left brace
-        let first_char = self.peek_char(offset).await?;
+        let first_char = self.peek_char(offset);
         if !match_char(first_char, '{') {
             return self.advance_pos_and_return(first_char);
         }
+
+        // Make sure a maximum-length lexeme can fit into the read buffer
+        if self.buffer_pos + LEXEME_LIMIT > self.buffer.len() && !self.end_of_input {
+            self.top_up_buffer().await?;
+        }
+
         offset += 1;
 
         // match left delimiter tag
         for d in self.delimiter_tag.clone() {
-            let current_char = self.peek_char(offset).await?;
+            let current_char = self.peek_char(offset);
             offset += 1;
             if !match_char(current_char, d) {
                 return self.advance_pos_and_return(first_char);
@@ -171,7 +208,7 @@ impl<R: AsyncReadExt + Unpin> ProtoGraphemeIterator<R> {
         }
 
         // match left pipe
-        let current_char = self.peek_char(offset).await?;
+        let current_char = self.peek_char(offset);
         if !match_char(current_char, '|') {
             return self.advance_pos_and_return(first_char);
         }
@@ -182,7 +219,7 @@ impl<R: AsyncReadExt + Unpin> ProtoGraphemeIterator<R> {
             let expression_end_offset = offset;
 
             // match right pipe
-            let current_char = self.peek_char(offset).await?;
+            let current_char = self.peek_char(offset);
             offset += 1;
             if !match_char(current_char, '|') {
                 continue;
@@ -190,7 +227,7 @@ impl<R: AsyncReadExt + Unpin> ProtoGraphemeIterator<R> {
 
             // match left delimiter tag
             for d in self.delimiter_tag.clone() {
-                let current_char = self.peek_char(offset).await?;
+                let current_char = self.peek_char(offset);
                 offset += 1;
                 if !match_char(current_char, d) {
                     continue 'outer;
@@ -198,7 +235,7 @@ impl<R: AsyncReadExt + Unpin> ProtoGraphemeIterator<R> {
             }
 
             // match right brace
-            let current_char = self.peek_char(offset).await?;
+            let current_char = self.peek_char(offset);
             offset += 1;
             if !match_char(current_char, '}') {
                 continue;
@@ -214,17 +251,20 @@ impl<R: AsyncReadExt + Unpin> ProtoGraphemeIterator<R> {
     }
 }
 
+/// Creates an iterator-like object which represents the first stage of parsing the
+/// artifact file at `path`, using the given `delimiter_tag` to denote special expressions
+/// in the file.
 fn read_proto_graphemes(path: &Path, delimiter_tag: &str) -> std::io::Result<ProtoGraphemeIterator<tokio::fs::File>> {
     let input = tokio::fs::File::from_std(std::fs::File::open(path)?);
-    let source = AsyncCharSource::new(UTF_8.new_decoder(), input);
+    let source = AsyncCharSource::new(UTF_8.new_decoder(), input, BUFFER_REFILL_AMOUNT * 4);
 
-    Ok(ProtoGraphemeIterator::new(source, delimiter_tag))
+    Ok(ProtoGraphemeIterator::new(source, delimiter_tag, BUFFER_REFILL_AMOUNT))
 }
 
 #[cfg(test)]
 mod tests {
 
-    use super::{AsyncCharSource, ProtoGrapheme, ProtoGraphemeIterator};
+    use super::{BUFFER_REFILL_AMOUNT, AsyncCharSource, ProtoGrapheme, ProtoGraphemeIterator};
     use quickcheck::{Arbitrary, Gen};
     use quickcheck_macros::quickcheck;
     use encoding_rs::{UTF_8};
@@ -260,8 +300,8 @@ mod tests {
     fn serializing_a_protographeme_iterator_yields_the_original_string(protographemes: Vec<ProtoGrapheme>, delimiter_tag: String) -> bool {
         let input = serialize_protographemes(&protographemes, &delimiter_tag);
         let cursor = Cursor::new(input);
-        let source = AsyncCharSource::new(UTF_8.new_decoder(), cursor);
-        let mut iterator = ProtoGraphemeIterator::new(source, &delimiter_tag);
+        let source = AsyncCharSource::new(UTF_8.new_decoder(), cursor, BUFFER_REFILL_AMOUNT * 4);
+        let mut iterator = ProtoGraphemeIterator::new(source, &delimiter_tag, BUFFER_REFILL_AMOUNT);
         let mut output = Vec::with_capacity(protographemes.len());
 
         let rt = Builder::new_current_thread().build().unwrap();
@@ -269,7 +309,6 @@ mod tests {
             while let Ok(Some(pg)) = iterator.next().await {
                 output.push(pg);
             }
-            println!("!");
             protographemes == output
         });
     }
