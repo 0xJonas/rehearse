@@ -1,5 +1,5 @@
 use tokio::io::AsyncReadExt;
-use encoding_rs::{UTF_8, Decoder};
+use encoding_rs::{UTF_8, Decoder, DecoderResult};
 
 use std::iter::FromIterator;
 use std::path::Path;
@@ -56,38 +56,63 @@ impl<R: AsyncReadExt + Unpin> AsyncCharSource<R> {
     async fn append_chars(&mut self, buffer: &mut Vec<char>) -> std::io::Result<bool> {
         let read_buffer_len = self.read_buffer.len();
         let iterations = (buffer.capacity() + read_buffer_len - 1) / read_buffer_len;
-        let mut utf8_buffer = String::with_capacity(read_buffer_len);
+        let mut utf8_buffer = String::new();
         let mut end_of_input = false;
 
-        for _ in 0..iterations {
+        for i in 0..iterations {
             // Read new data
-            let bytes_read = read_to_buffer(&mut self.read_buffer[self.decode_strip_len..], &mut self.input).await?;
-            end_of_input = bytes_read < self.read_buffer.len();
+            let read_stop = read_buffer_len.min(buffer.capacity() - i * read_buffer_len);
+            let bytes_read = read_to_buffer(&mut self.read_buffer[self.decode_strip_len..read_stop], &mut self.input).await?;
+            let data_length = self.decode_strip_len + bytes_read;
+            end_of_input = data_length < read_stop;
 
             // Decode new data
-            let (res, bytes_decoded) = self.decoder.decode_to_string_without_replacement(&self.read_buffer[..bytes_read], &mut utf8_buffer, end_of_input);
+            utf8_buffer.clear();
+            utf8_buffer.reserve(data_length);
+            let (res, bytes_decoded) = self.decoder.decode_to_string_without_replacement(&self.read_buffer[..data_length], &mut utf8_buffer, end_of_input);
+            println!("data_length: {}, bytes_decoded: {}", data_length, bytes_decoded);
 
-            // Return an error if the data could not be decoded
-            if let encoding_rs::DecoderResult::Malformed(bad_bytes, _) = res {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!(
-                        "Could not decode {:?} as valid {}",
-                        Vec::from(&self.read_buffer[bytes_decoded .. bytes_decoded + bad_bytes as usize]),
-                        self.decoder.encoding().name()
-                    )
-                ))
+            match res {
+                DecoderResult::Malformed(bad_bytes, _) => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!(
+                            "Could not decode {:?} as valid {}",
+                            // The range has to be like this, because the malformed sequence counts as
+                            // part of the decoded bytes, even though it was not actually decoded.
+                            Vec::from(&self.read_buffer[bytes_decoded - bad_bytes as usize .. bytes_decoded]),
+                            self.decoder.encoding().name()
+                        )
+                    ))
+                },
+                DecoderResult::OutputFull if end_of_input && bytes_decoded < data_length => {
+                    // If the malformed sequence is at the end of the input and the utf8_buffer
+                    // is almost full, encoding_rs does not return a 'Malformed' result.
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!(
+                            "Could not decode {:?} as valid {}",
+                            Vec::from(&self.read_buffer[bytes_decoded..data_length]),
+                            self.decoder.encoding().name()
+                        )
+                    ))
+                },
+                _ => {}
             }
 
             // Write decode strip to the struct
-            self.read_buffer.copy_within(bytes_decoded..bytes_read, 0);
-            self.decode_strip_len = bytes_read - bytes_decoded;
+            self.read_buffer.copy_within(bytes_decoded..data_length, 0);
+            self.decode_strip_len = data_length - bytes_decoded;
 
             // Write new characters to the buffer
             for c in utf8_buffer.chars() {
                 buffer.push(c);
             }
             utf8_buffer.clear();
+
+            if end_of_input {
+                break;
+            }
         }
 
         return Ok(end_of_input);
@@ -270,7 +295,76 @@ mod tests {
     use encoding_rs::{UTF_8};
     use tokio::runtime::{Builder};
 
-    use std::io::Cursor;
+    use std::io::{Cursor, ErrorKind};
+
+    #[tokio::test]
+    async fn char_source_returns_correct_chars() {
+        let input = Cursor::new("Test1234");
+        let mut source = AsyncCharSource::new(UTF_8.new_decoder(), input, 10000);
+        let mut buffer = Vec::<char>::with_capacity(100);
+        assert_eq!(source.append_chars(&mut buffer).await.unwrap(), true);
+        assert_eq!(buffer, vec!['T', 'e', 's', 't', '1', '2', '3', '4']);
+    }
+
+    #[tokio::test]
+    async fn char_source_works_with_multiple_calls() {
+        let input = Cursor::new("Test1234");
+        let mut source = AsyncCharSource::new(UTF_8.new_decoder(), input, 10000);
+        let mut buffer = Vec::<char>::with_capacity(4);
+
+        assert_eq!(source.append_chars(&mut buffer).await.unwrap(), false);
+        assert_eq!(buffer, vec!['T', 'e', 's', 't']);
+
+        buffer.clear();
+        assert_eq!(source.append_chars(&mut buffer).await.unwrap(), false);
+        assert_eq!(buffer, vec!['1', '2', '3', '4']);
+
+        buffer.clear();
+        assert_eq!(source.append_chars(&mut buffer).await.unwrap(), true);
+        assert!(buffer.is_empty());
+    }
+
+    #[tokio::test]
+    async fn char_source_works_with_multibyte_chars() {
+        let input = Cursor::new("Test 🧪");
+        let mut source = AsyncCharSource::new(UTF_8.new_decoder(), input, 10000);
+        let mut buffer = Vec::<char>::with_capacity(100);
+
+        assert_eq!(source.append_chars(&mut buffer).await.unwrap(), true);
+        assert_eq!(buffer, vec!['T', 'e', 's', 't', ' ', '🧪']);
+    }
+
+    #[tokio::test]
+    async fn char_source_works_with_buffer_sizes_not_aligned_to_char_boundaries() {
+        let input = Cursor::new("Test 🧪");
+        let mut source = AsyncCharSource::new(UTF_8.new_decoder(), input, 4);
+        let mut buffer = Vec::<char>::with_capacity(100);
+
+        assert_eq!(source.append_chars(&mut buffer).await.unwrap(), true);
+        assert_eq!(buffer, vec!['T', 'e', 's', 't', ' ', '🧪']);
+    }
+
+    #[tokio::test]
+    async fn char_source_rejects_malformed_bytes_at_the_end() {
+        let input = Cursor::new(b"Error \xff");
+        let mut source = AsyncCharSource::new(UTF_8.new_decoder(), input, 10000);
+        let mut buffer = Vec::<char>::with_capacity(100);
+
+        let err = source.append_chars(&mut buffer).await.unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::InvalidData);
+        assert_eq!(format!("{}", err), "Could not decode [255] as valid UTF-8");
+    }
+
+    #[tokio::test]
+    async fn char_source_rejects_malformed_bytes_in_the_middle() {
+        let input = Cursor::new(b"Error \xff More stuff");
+        let mut source = AsyncCharSource::new(UTF_8.new_decoder(), input, 10000);
+        let mut buffer = Vec::<char>::with_capacity(100);
+
+        let err = source.append_chars(&mut buffer).await.unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::InvalidData);
+        assert_eq!(format!("{}", err), "Could not decode [255] as valid UTF-8");
+    }
 
     impl Arbitrary for ProtoGrapheme {
 
