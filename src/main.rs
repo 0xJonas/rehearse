@@ -1,7 +1,7 @@
 mod priority_queue;
 mod test_cases;
 mod cli;
-mod artifacts;
+mod match_script;
 
 use cli::{Terminal, ColorTerminal, TermColorMode, TermColor, ArgTemplate, Arg, ArgError, ArgResult};
 use test_cases::get_default_test_options;
