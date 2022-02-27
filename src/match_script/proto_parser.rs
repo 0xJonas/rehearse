@@ -145,7 +145,7 @@ impl<R: AsyncReadExt + Unpin> ProtoGraphemeIterator<R> {
             buffer: Vec::with_capacity(char_buffer_size),
             buffer_pos: 0,
             delimiter_tag: delimiter_tag.chars().collect(),
-            source: source,
+            source,
             end_of_input: false
         }
     }
@@ -171,7 +171,7 @@ impl<R: AsyncReadExt + Unpin> ProtoGraphemeIterator<R> {
     /// 
     /// This function should be used instead of using `buffer_pos` directly, because
     /// `buffer_pos` can be changed by other functions.
-    fn peek_char(&mut self, offset: usize) -> Option<char> {
+    fn peek_char(&self, offset: usize) -> Option<char> {
         if self.buffer_pos + offset < self.buffer.len() {
             let out = self.buffer[self.buffer_pos + offset];
             return Some(out);
@@ -196,10 +196,9 @@ impl<R: AsyncReadExt + Unpin> ProtoGraphemeIterator<R> {
     /// iterator is depleted, or an error if the next ProtoGrapheme could not be read.
     async fn next(&mut self) -> std::io::Result<Option<ProtoGrapheme>> {
         fn match_char(opt_char: Option<char>, c: char) -> bool {
-            if let Some(t) = opt_char {
-                t == c
-            } else {
-                false
+            match opt_char {
+                Some(t) => t == c,
+                None => false
             }
         }
 
@@ -224,10 +223,10 @@ impl<R: AsyncReadExt + Unpin> ProtoGraphemeIterator<R> {
         offset += 1;
 
         // match left delimiter tag
-        for d in self.delimiter_tag.clone() {
+        for d in &self.delimiter_tag {
             let current_char = self.peek_char(offset);
             offset += 1;
-            if !match_char(current_char, d) {
+            if !match_char(current_char, *d) {
                 return self.advance_pos_and_return(first_char);
             }
         }
@@ -251,10 +250,10 @@ impl<R: AsyncReadExt + Unpin> ProtoGraphemeIterator<R> {
             }
 
             // match left delimiter tag
-            for d in self.delimiter_tag.clone() {
+            for d in &self.delimiter_tag {
                 let current_char = self.peek_char(offset);
                 offset += 1;
-                if !match_char(current_char, d) {
+                if !match_char(current_char, *d) {
                     continue 'outer;
                 }
             }

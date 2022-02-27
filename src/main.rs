@@ -13,7 +13,7 @@ use atty::Stream;
 use tokio::runtime::Builder;
 
 use std::process::{Command, exit};
-use std::path::PathBuf;
+use std::path::Path;
 use std::str::FromStr;
 
 const ENV_LOG_LEVEL: &'static str = "REHEARSE_LOG_LEVEL";
@@ -67,14 +67,12 @@ fn get_default_color_mode() -> TermColorMode {
         .output();
     
     // Parse output from tput
-    let available_colors = if let Ok(o) = tput_output {
-        if let Ok(s) = String::from_utf8(o.stdout) {
-            usize::from_str_radix(&s.trim(), 10).map_or(8, |n| n)
-        } else {
-            8   // Output was somehow not a string
+    let available_colors = match tput_output {
+        Ok(o) => match String::from_utf8(o.stdout) {
+            Ok(s) => usize::from_str_radix(&s.trim(), 10).map_or(8, |n| n),
+            Err(_) => 8   // Output was somehow not a string
         }
-    } else {
-        8   // Command failed
+        Err(_) => 8   // Command failed
     };
     
     // Determine color mode
@@ -107,12 +105,13 @@ fn setup_logging(arg_result: &ArgResult, color_mode: TermColorMode) -> Result<()
     };
 
     // Determine log file
+    let env_var_log_file = std::env::var(ENV_LOG_FILE);
     let target = if let Some(str) = arg_result.get_argument(ARG_LOG_FILE) {
-        PathBuf::from(str)
-    } else if let Ok(str) = std::env::var(ENV_LOG_FILE) {
-        PathBuf::from(str)
+        Path::new(str)
+    } else if let Ok(str) = &env_var_log_file {
+        Path::new(str)
     } else {
-        PathBuf::from(DEFAULT_LOG_FILE)
+        Path::new(DEFAULT_LOG_FILE)
     };
     let file = std::fs::File::create(target)?;
 
@@ -146,7 +145,7 @@ fn main() {
 
     // Initial terminal which is basically only used to print the usage
     // if argument parsing fails. Uses 'auto' color mode.
-    let mut initial_terminal = ColorTerminal::new(default_color_mode.clone());
+    let mut initial_terminal = ColorTerminal::new(default_color_mode);
     
     let arg_template = ArgTemplate::new()
         .set_usage_header("rehearse - Expectation testing tool")
@@ -162,13 +161,16 @@ fn main() {
         .set_usage_trailer("written in 2022 by Delphi1024");
 
     let mut args = std::env::args().peekable();
-    let program_name = if let Some(name) = args.peek() { name } else { "rehearse" };
+    let program_name = match args.peek() {
+        Some(name) => name,
+        None =>  "rehearse"
+    };
     let arg_result = match arg_template.parse_args(std::env::args()) {
         Ok(res) => res,
         Err(ArgError(msg)) => {
             arg_template
                 .set_usage_header(&msg)
-                .write_usage(&mut initial_terminal, program_name).expect("Stdout is broken!!");
+                .write_usage(&mut initial_terminal, program_name).unwrap();
             exit(EXIT_CODE_BAD_ARGS);
         }
     };
@@ -182,7 +184,7 @@ fn main() {
         Some(mode) => {
             arg_template
                 .set_usage_header(&format!("Unrecognized color mode: {}", mode))
-                .write_usage(&mut initial_terminal, program_name).expect("Stdout is broken!!");
+                .write_usage(&mut initial_terminal, program_name).unwrap();
             exit(EXIT_CODE_BAD_ARGS);
         }
     };
@@ -192,30 +194,30 @@ fn main() {
 
     // Setup logging
     if let Err(e) = setup_logging(&arg_result, color_mode) {
-        terminal.set_color_fg(&TermColor::Error).expect("Stdout is broken!!");
-        terminal.write(format!("Error setting up logging: {}\n", e)).expect("Stdout is broken!!");
-        terminal.reset_color().expect("Stdout is broken!!");
-        terminal.flush().expect("Stdout is broken!!");
+        terminal.set_color_fg(&TermColor::Error).unwrap();
+        terminal.write(format!("Error setting up logging: {}\n", e)).unwrap();
+        terminal.reset_color().unwrap();
+        terminal.flush().unwrap();
     }
 
     // Help explicitly requested
     if let Some(_) = arg_result.get_argument(ARG_HELP) {
         trace!("Help requested");
-        arg_template.write_usage(&mut terminal, program_name).expect("Stdout is broken!!");
+        arg_template.write_usage(&mut terminal, program_name).unwrap();
         exit(EXIT_CODE_OK);
     }
 
     // Print version
     if let Some(_) = arg_result.get_argument(ARG_VERSION) {
         trace!("Version requested");
-        write_version(&mut terminal).expect("Stdout is broken!!");
+        write_version(&mut terminal).unwrap();
         exit(EXIT_CODE_OK);
     }
 
     // No files specified
     if arg_result.get_rest().len() == 0 {
         error!("No input files");
-        arg_template.write_usage(&mut terminal, program_name).expect("Stdout is broken!!");
+        arg_template.write_usage(&mut terminal, program_name).unwrap();
         exit(EXIT_CODE_NO_FILES);
     }
 

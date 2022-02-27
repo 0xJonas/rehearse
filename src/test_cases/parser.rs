@@ -71,11 +71,11 @@ impl Error for ParseError {
     }
 }
 
-fn ensure_absolute_path(maybe_relative: PathBuf, working_directory: &PathBuf) -> PathBuf {
+fn make_absolute_path(maybe_relative: &Path, working_directory: &Path) -> PathBuf {
     if maybe_relative.is_absolute() {
-        return maybe_relative;
+        return PathBuf::from(maybe_relative);
     } else {
-        let mut out = working_directory.clone();
+        let mut out = PathBuf::from(working_directory);
         out.push(maybe_relative);
         return out;
     }
@@ -83,9 +83,9 @@ fn ensure_absolute_path(maybe_relative: PathBuf, working_directory: &PathBuf) ->
 
 /// Read the field `key` in JSON object `obj`. Returns the content on success or a
 /// ParseError if the value was not a string or the field did not exist.
-fn read_required_string_field(obj: &serde_json::Map<String, Value>, key: &str) -> Result<String, ParseError> {
+fn read_required_string_field<'a>(obj: &'a serde_json::Map<String, Value>, key: &str) -> Result<&'a str, ParseError> {
     match obj.get(key) {
-        Some(Value::String(str)) => Ok(str.clone()),
+        Some(Value::String(str)) => Ok(str),
         Some(_) => Err(ParseError::BadContent(format!("Field \"{}\" must be a string", key))),
         _ => Err(ParseError::BadContent(format!("Missing required field \"{}\"", key)))
     }
@@ -93,23 +93,23 @@ fn read_required_string_field(obj: &serde_json::Map<String, Value>, key: &str) -
 
 /// Read the field `key` in JSON object `obj`. Returns the content on success,
 /// a ParseError if the value was not a string, or None if the field did not exist.
-fn read_optional_string_field(obj: &serde_json::Map<String, Value>, key: &str) -> Result<Option<String>, ParseError> {
+fn read_optional_string_field<'a>(obj: &'a serde_json::Map<String, Value>, key: &str) -> Result<Option<&'a str>, ParseError> {
     match obj.get(key) {
-        Some(Value::String(str)) => Ok(Some(str.clone())),
+        Some(Value::String(str)) => Ok(Some(str)),
         Some(_) => Err(ParseError::BadContent(format!("Field \"{}\" must be a string", key))),
         None => Ok(None)
     }
 }
 
 /// Parses an element of the artifacts array in rehearse.json.
-fn parse_artifact(obj: &serde_json::Map<String, Value>, working_directory: &PathBuf) -> Result<ArtifactConfig, ParseError> {
+fn parse_artifact(obj: &serde_json::Map<String, Value>, working_directory: &Path) -> Result<ArtifactConfig, ParseError> {
     let name_raw = read_required_string_field(obj, KEY_ARTIFACT_NAME)?;
-    let name = ensure_absolute_path(PathBuf::from(name_raw), working_directory);
+    let name = make_absolute_path(Path::new(&name_raw), working_directory);
 
     let reference_raw = read_required_string_field(obj, KEY_ARTIFACT_REFERENCE)?;
-    let reference = ensure_absolute_path(PathBuf::from(reference_raw), working_directory);
+    let reference = make_absolute_path(Path::new(&reference_raw), working_directory);
 
-    let encoding = read_optional_string_field(obj, KEY_ARTIFACT_ENCODING)?.unwrap_or(String::from(DEFAULT_ARTIFACT_ENCODING));
+    let encoding = read_optional_string_field(obj, KEY_ARTIFACT_ENCODING)?.unwrap_or(DEFAULT_ARTIFACT_ENCODING);
 
     let is_binary_file = match obj.get(KEY_ARTIFACT_IS_BINARY_FILE) {
         Some(Value::Bool(b)) => *b,
@@ -118,15 +118,15 @@ fn parse_artifact(obj: &serde_json::Map<String, Value>, working_directory: &Path
     };
 
     return Ok(ArtifactConfig {
-        name: name,
-        reference: reference,
-        encoding: encoding,
-        is_binary_file: is_binary_file
+        name,
+        reference,
+        encoding: String::from(encoding),
+        is_binary_file
     });
 }
 
 /// Parses the artifacts array in rehearse.json.
-fn parse_artifacts(array: &Vec<Value>, working_directory: &PathBuf) -> Result<Vec<ArtifactConfig>, ParseError> {
+fn parse_artifacts(array: &Vec<Value>, working_directory: &Path) -> Result<Vec<ArtifactConfig>, ParseError> {
     trace!("Parsing artifacts...");
     let mut out = Vec::with_capacity(array.len());
     for v in array.iter() {
@@ -154,8 +154,8 @@ fn parse_options(obj: &serde_json::Map<String, Value>, defaults: &TestOptions) -
         }
     };
 
-    let delimiter_tag = read_optional_string_field(obj, KEY_OPTION_DELIMITER_TAG)?.unwrap_or(defaults.delimiter_tag.clone());
-    let shell = read_optional_string_field(obj, KEY_OPTION_SHELL)?.unwrap_or(defaults.shell.clone());
+    let delimiter_tag = read_optional_string_field(obj, KEY_OPTION_DELIMITER_TAG)?.unwrap_or(&defaults.delimiter_tag);
+    let shell = read_optional_string_field(obj, KEY_OPTION_SHELL)?.unwrap_or(&defaults.shell);
     
     let shell_args = match obj.get(KEY_OPTION_SHELL_ARGS) {
         Some(Value::Array(values)) => {
@@ -195,11 +195,11 @@ fn parse_options(obj: &serde_json::Map<String, Value>, defaults: &TestOptions) -
     };
 
     return Ok(TestOptions {
-        ignore_exit_code: ignore_exit_code,
-        delimiter_tag: delimiter_tag,
-        shell: shell,
-        shell_args: shell_args,
-        buffer_size: buffer_size
+        ignore_exit_code,
+        delimiter_tag: String::from(delimiter_tag),
+        shell: String::from(shell),
+        shell_args,
+        buffer_size
     });
 }
 
@@ -233,28 +233,29 @@ pub fn parse_test_case(path: &Path, defaults: &TestOptions) -> Result<TestCase, 
     let name = read_required_string_field(&root, KEY_NAME)?;
 
     let working_directory = match path.parent() {
-        Some(parent) => PathBuf::from(parent),
-        None => PathBuf::from(".")
+        Some(parent) => Path::new(parent),
+        None => Path::new(".")
     };
 
     let prelaunch = read_optional_string_field(&root, KEY_PRELAUNCH)?;
     let postlaunch = read_optional_string_field(&root, KEY_POSTLAUNCH)?;
 
     let reference_stdout_raw = read_optional_string_field(&root, KEY_REFERENCE_STDOUT)?;
-    let reference_stdout = if let Some(ref ref_file) = reference_stdout_raw {
-        let path = ensure_absolute_path(PathBuf::from(ref_file), &working_directory);
-        if path.exists() {
-            Some(path)
-        } else {
-            return Err(ParseError::BadContent(format!("File {} not found", ref_file)));
-        }
-    } else {
-        None
+    let reference_stdout = match reference_stdout_raw {
+        Some(ref_file) => {
+            let path = make_absolute_path(Path::new(ref_file), &working_directory);
+            if path.exists() {
+                Some(path)
+            } else {
+                return Err(ParseError::BadContent(format!("File {} not found", ref_file)));
+            }
+        },
+        None => None
     };
 
     let reference_stderr = match root.get(KEY_REFERENCE_STDERR) {
         Some(Value::String(str)) => {
-            let path = ensure_absolute_path(PathBuf::from(str), &working_directory);
+            let path = make_absolute_path(Path::new(str), &working_directory);
             if path.exists() {
                 Some(path)
             } else {
@@ -294,16 +295,16 @@ pub fn parse_test_case(path: &Path, defaults: &TestOptions) -> Result<TestCase, 
     };
 
     return Ok(TestCase {
-        version: version,
-        name: name,
-        working_directory: working_directory,
-        command: command,
-        prelaunch: prelaunch,
-        postlaunch: postlaunch,
-        reference_stdout: reference_stdout,
-        reference_stderr: reference_stderr,
-        artifacts: artifacts,
-        options: options
+        version: String::from(version),
+        name: String::from(name),
+        working_directory: PathBuf::from(working_directory),
+        command: String::from(command),
+        prelaunch: prelaunch.map(|s| String::from(s)),
+        postlaunch: postlaunch.map(|s| String::from(s)),
+        reference_stdout,
+        reference_stderr,
+        artifacts,
+        options
     });
 }
 
