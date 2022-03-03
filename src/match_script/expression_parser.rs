@@ -149,8 +149,9 @@ impl Display for TextExpression {
 /// 
 /// This type offers some convenience methods for parsing as well as keeping
 /// track of the current position in the input.
-struct Cursor<I: Iterator<Item=char>> {
-    iter: Peekable<I>,
+struct Cursor<'a> {
+    content: &'a str,
+    iter: Peekable<std::str::Chars<'a>>,
     position: CursorPosition
 }
 
@@ -159,7 +160,9 @@ struct Cursor<I: Iterator<Item=char>> {
 struct CursorPosition {
     file: String,
     line: usize,
-    col: usize
+    col: usize,
+    offset: usize,
+    line_offset: usize
 }
 
 impl Display for CursorPosition {
@@ -173,7 +176,8 @@ impl Display for CursorPosition {
 #[derive(Debug)]
 struct ParseError {
     message: String,
-    context: CursorPosition
+    context: String,
+    position: CursorPosition
 }
 
 /// Helper function to construct an error message that lists all the
@@ -186,20 +190,38 @@ fn build_error_message_from_chars(chars: &[char]) -> String {
     return format!("{} expected", char_list);
 }
 
-impl<I: Iterator<Item=char>> Cursor<I> {
+impl<'a> Cursor<'a> {
+
+    fn new<'b>(content: &'b str, file: &str) -> Cursor<'b> {
+        Cursor {
+            content,
+            iter: content.chars().peekable(),
+            position: CursorPosition {
+                file: String::from(file),
+                line: 0,
+                col: 0,
+                offset: 0,
+                line_offset: 0
+            }
+        }
+    }
 
     /// Returns the character that the Cursor currently points to,
     /// without advancing the Cursor.
-    fn peek(&mut self) -> Option<&char> {
-        self.iter.peek()
+    fn peek(&mut self) -> Option<char> {
+        self.iter.peek().map(|c| *c)
     }
 
     /// Advances the Cursor to the next character.
     fn advance(&mut self) -> () {
-        self.position.col += 1;
-        if let Some('\n') = self.iter.next() {
-            self.position.col = 0;
-            self.position.line += 1;
+        if let Some(&c) = self.iter.peek() {
+            self.position.col += 1;
+            self.position.offset += c.len_utf8();
+            if let Some('\n') = self.iter.next() {
+                self.position.col = 0;
+                self.position.line += 1;
+                self.position.line_offset = self.position.offset;
+            }
         }
     }
 
@@ -207,20 +229,20 @@ impl<I: Iterator<Item=char>> Cursor<I> {
     /// advances the Cursor, otherwise returns an error.
     fn expect(&mut self, chars: &[char]) -> Result<(), ParseError> {
         if let Some(c) = self.peek() {
-            if chars.contains(c) {
+            if chars.contains(&c) {
                 // One of the expected chars was found
                 self.advance();
                 Ok(())
             } else {
                 // A char that was not expected was found
-                Err(ParseError::new(&build_error_message_from_chars(chars), self.get_position()))
+                Err(ParseError::new(&build_error_message_from_chars(chars), self))
             }
         } else if chars.len() == 0 {
             // Cursor is empty, but nothing was expected
             Ok(())
         } else {
             // Cursor is empty, but something was expected
-            Err(ParseError::new(&build_error_message_from_chars(chars), self.get_position()))
+            Err(ParseError::new(&build_error_message_from_chars(chars), self))
         }
     }
 
@@ -232,17 +254,38 @@ impl<I: Iterator<Item=char>> Cursor<I> {
 
 impl ParseError {
 
-    fn new(message: &str, context: CursorPosition) -> ParseError {
+    fn new(message: &str, cursor: &Cursor) -> ParseError {
+        let line_len: usize = cursor
+            .content[cursor.position.line_offset..]
+            .chars()
+            .take_while(|&c| c != '\n')
+            .map(|c| c.len_utf8())
+            .sum();
         ParseError {
             message: String::from(message),
-            context
+            position: cursor.get_position(),
+            context: String::from(&cursor.content[cursor.position.line_offset .. (cursor.position.line_offset + line_len)])
+        }
+    }
+
+    fn new_at(message: &str, cursor: &Cursor, position: CursorPosition) -> ParseError {
+        let line_len: usize = cursor
+            .content[position.line_offset..]
+            .chars()
+            .take_while(|&c| c != '\n')
+            .map(|c| c.len_utf8())
+            .sum();
+        ParseError {
+            message: String::from(message),
+            context: String::from(&cursor.content[position.line_offset .. (position.line_offset + line_len)]),
+            position
         }
     }
 }
 
 /// Skips all whitespace characters up to the next non-whitespace character.
-fn skip_whitespace<I: Iterator<Item=char>>(cursor: &mut Cursor<I>) -> () {
-    while let Some(&c) = cursor.peek() {
+fn skip_whitespace(cursor: &mut Cursor) -> () {
+    while let Some(c) = cursor.peek() {
         if c.is_ascii_whitespace() {
             cursor.advance();
         } else {
@@ -255,9 +298,9 @@ fn skip_whitespace<I: Iterator<Item=char>>(cursor: &mut Cursor<I>) -> () {
 /// 
 /// A Symbol starts with either an upper- or lowercase character and contains
 /// only alphanumeric characters and underscores.
-fn parse_symbol<I: Iterator<Item=char>>(cursor: &mut Cursor<I>) -> Result<Symbol, ParseError> {
+fn parse_symbol(cursor: &mut Cursor) -> Result<Symbol, ParseError> {
     let mut symbol = String::new();
-    while let Some(&c) = cursor.peek() {
+    while let Some(c) = cursor.peek() {
         if c.is_ascii_alphanumeric() || c == '_' {
             cursor.advance();
             symbol.push(c);
@@ -269,14 +312,14 @@ fn parse_symbol<I: Iterator<Item=char>>(cursor: &mut Cursor<I>) -> Result<Symbol
     return if symbol.len() > 0 {
         Ok(symbol)
     } else {
-        Err(ParseError::new("Symbol expected", cursor.get_position()))
+        Err(ParseError::new("Symbol expected", cursor))
     }
 }
 
 /// Parses a number.
 /// 
 /// Numbers are signed 64-bit integers.
-fn parse_number<I: Iterator<Item=char>>(cursor: &mut Cursor<I>) -> Result<i64, ParseError> {
+fn parse_number(cursor: &mut Cursor) -> Result<i64, ParseError> {
     let mut number_str = String::new();
 
     // Read sign
@@ -288,7 +331,7 @@ fn parse_number<I: Iterator<Item=char>>(cursor: &mut Cursor<I>) -> Result<i64, P
     };
 
     // Read digits
-    while let Some(&c) = cursor.peek() {
+    while let Some(c) = cursor.peek() {
         if c.is_ascii_digit() {
             cursor.advance();
             number_str.push(c);
@@ -300,10 +343,10 @@ fn parse_number<I: Iterator<Item=char>>(cursor: &mut Cursor<I>) -> Result<i64, P
     return if number_str.len() > 0 {
         match i64::from_str(&number_str) {
             Ok(v) => Ok(v * sign),
-            Err(e) => Err(ParseError::new(&format!("Error parsing {}: {}", number_str, e), cursor.get_position()))
+            Err(e) => Err(ParseError::new(&format!("Error parsing {}: {}", number_str, e), cursor))
         }
     } else {
-        Err(ParseError::new("Number expected", cursor.get_position()))
+        Err(ParseError::new("Number expected", cursor))
     }
 }
 
@@ -311,7 +354,7 @@ fn parse_number<I: Iterator<Item=char>>(cursor: &mut Cursor<I>) -> Result<i64, P
 /// 
 /// Arguments have the syntax `<argument> := <symbol> '=' <argument-expr>`.
 /// ArgumentExpressions can be a symbol, a number or a function call: `<argument-expr> := <symbol> | <number> | <function-call>`.
-fn parse_argument<I: Iterator<Item=char>>(cursor: &mut Cursor<I>) -> Result<(Symbol, ArgumentExpression), ParseError> {
+fn parse_argument(cursor: &mut Cursor) -> Result<(Symbol, ArgumentExpression), ParseError> {
     let argument_name = parse_symbol(cursor)?;
 
     skip_whitespace(cursor);
@@ -323,9 +366,9 @@ fn parse_argument<I: Iterator<Item=char>>(cursor: &mut Cursor<I>) -> Result<(Sym
             cursor.advance();
             ArgumentExpression::FunctionCall(parse_function_call(cursor)?)
         },
-        Some(&c) if c.is_ascii_digit() || c == '-' => ArgumentExpression::Number(parse_number(cursor)?),
-        Some(&c) if c.is_ascii_alphabetic() || c == '_' => ArgumentExpression::Symbol(parse_symbol(cursor)?),
-        _ => return Err(ParseError::new("Symbol, number or function call expected", cursor.get_position()))
+        Some(c) if c.is_ascii_digit() || c == '-' => ArgumentExpression::Number(parse_number(cursor)?),
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => ArgumentExpression::Symbol(parse_symbol(cursor)?),
+        _ => return Err(ParseError::new("Symbol, number or function call expected", cursor))
     };
 
     return Ok((argument_name, argument_expr));
@@ -338,7 +381,7 @@ fn parse_argument<I: Iterator<Item=char>>(cursor: &mut Cursor<I>) -> Result<(Sym
 /// ```text
 /// <function-call> := `<symbol> ('[' <argument> (',' <argument>)* ']')? ('{' <text-expr> '}')*
 /// ```
-fn parse_function_call<I: Iterator<Item=char>>(cursor: &mut Cursor<I>) -> Result<FunctionCall, ParseError> {
+fn parse_function_call(cursor: &mut Cursor) -> Result<FunctionCall, ParseError> {
     // Parse name
     let name = parse_symbol(cursor)?;
     let mut arguments = Vec::new();
@@ -379,13 +422,14 @@ fn parse_function_call<I: Iterator<Item=char>>(cursor: &mut Cursor<I>) -> Result
 /// if for each left curly brace there is a matching right curly brace. Finally, curly braces can also be escaped
 /// with a '\', however, the backslash will also be part of the resulting text. Essentially, the sequences "\{" and "\}"
 /// are treated as single characters. This is indended to be used in regular expressions.
-fn parse_text_expression<I: Iterator<Item=char>>(cursor: &mut Cursor<I>) -> Result<TextExpression, ParseError> {
+fn parse_text_expression(cursor: &mut Cursor) -> Result<TextExpression, ParseError> {
     let mut brace_nesting = 0;
     let mut segments = Vec::<TextExpressionSegment>::new();
 
     let mut current_string = String::new();
+    let mut last_left_brace = cursor.get_position();
 
-    while let Some(&c) = cursor.peek() {
+    while let Some(c) = cursor.peek() {
         match c {
             '\\' => {
                 current_string.push('\\');
@@ -410,9 +454,11 @@ fn parse_text_expression<I: Iterator<Item=char>>(cursor: &mut Cursor<I>) -> Resu
             '{' => {
                 brace_nesting += 1;
                 current_string.push('{');
+                last_left_brace = cursor.get_position();
                 cursor.advance();
             },
             '`' => {
+                let backtick_pos = cursor.get_position();
                 cursor.advance();
 
                 let next = cursor.peek();
@@ -420,11 +466,11 @@ fn parse_text_expression<I: Iterator<Item=char>>(cursor: &mut Cursor<I>) -> Resu
                 match next {
                     Some('`') | Some('{') | Some('}') => {
                         // Escaped character
-                        current_string.push(*next.unwrap());
+                        current_string.push(next.unwrap());
                         cursor.advance();
                     },
                     None => {
-                        return Err(ParseError::new("Dangling ` character", cursor.get_position()));
+                        return Err(ParseError::new_at("Dangling ` character", cursor, backtick_pos));
                     },
                     _ => {
                         // Function call
@@ -445,7 +491,7 @@ fn parse_text_expression<I: Iterator<Item=char>>(cursor: &mut Cursor<I>) -> Resu
     }
 
     if brace_nesting != 0 {
-        return Err(ParseError::new("Unmatched left curly brace", cursor.get_position()));
+        return Err(ParseError::new_at("Unmatched left curly brace", cursor, last_left_brace));
     }
 
     if current_string.len() != 0 {
@@ -462,24 +508,9 @@ mod tests {
 
     use super::*;
 
-    use std::str::Chars;
-
-    fn cursor_from_string<'a>(str: &'a str, name: &str) -> Cursor<Chars<'a>> {
-        let position = CursorPosition {
-            file: String::from(name),
-            line: 0,
-            col: 0
-        };
-
-        return Cursor {
-            iter: str.chars().peekable(),
-            position
-        };
-    }
-
     #[test]
     fn parse_function_call_without_arguments() {
-        let mut cursor = cursor_from_string("`test", "parse_function_call_without_arguments");
+        let mut cursor = Cursor::new("`test", "parse_function_call_without_arguments");
         let expr = parse_text_expression(&mut cursor).unwrap();
 
         let expected = TextExpression {
@@ -499,7 +530,7 @@ mod tests {
     
     #[test]
     fn parse_function_call_with_arguments() {
-        let mut cursor = cursor_from_string("`test[arg1 = something]", "parse_function_call_with_arguments");
+        let mut cursor = Cursor::new("`test[arg1 = something]", "parse_function_call_with_arguments");
         let expr = parse_text_expression(&mut cursor).unwrap();
 
         let expected = TextExpression {
@@ -519,7 +550,7 @@ mod tests {
 
     #[test]
     fn parse_function_call_with_texts() {
-        let mut cursor = cursor_from_string("`test{This is a test}", "parse_function_call_with_texts");
+        let mut cursor = Cursor::new("`test{This is a test}", "parse_function_call_with_texts");
         let expr = parse_text_expression(&mut cursor).unwrap();
 
         let expected = TextExpression {
@@ -539,7 +570,7 @@ mod tests {
     
     #[test]
     fn parse_function_call_with_arguments_and_texts() {
-        let mut cursor = cursor_from_string("`test[arg1 = something]{This is a test}", "parse_function_call_with_arguments_and_texts");
+        let mut cursor = Cursor::new("`test[arg1 = something]{This is a test}", "parse_function_call_with_arguments_and_texts");
         let expr = parse_text_expression(&mut cursor).unwrap();
         
         let expected = TextExpression {
@@ -559,7 +590,7 @@ mod tests {
 
     #[test]
     fn parse_function_call_with_different_argument_types() {
-        let mut cursor = cursor_from_string("`test[arg1 = something, arg2 = 5, arg3 = -10, arg4 = `test2{Hello}]", "parse_function_call_with_different_argument_types");
+        let mut cursor = Cursor::new("`test[arg1 = something, arg2 = 5, arg3 = -10, arg4 = `test2{Hello}]", "parse_function_call_with_different_argument_types");
         let expr = parse_text_expression(&mut cursor).unwrap();
 
         let expected = TextExpression {
@@ -588,7 +619,7 @@ mod tests {
 
     #[test]
     fn parse_text() {
-        let mut cursor = cursor_from_string("Hello, World", "parse_text");
+        let mut cursor = Cursor::new("Hello, World", "parse_text");
         let expr = parse_text_expression(&mut cursor).unwrap();
 
         let expected = TextExpression {
@@ -602,7 +633,7 @@ mod tests {
 
     #[test]
     fn parse_text_with_escape_character() {
-        let mut cursor = cursor_from_string("{}{{}}`{`}\\{\\}", "parse_text_with_escape_character");
+        let mut cursor = Cursor::new("{}{{}}`{`}\\{\\}", "parse_text_with_escape_character");
         let expr = parse_text_expression(&mut cursor).unwrap();
 
         let expected = TextExpression {
@@ -616,7 +647,7 @@ mod tests {
 
     #[test]
     fn parse_text_with_function_call() {
-        let mut cursor = cursor_from_string("Hello `func{World}", "parse_text_with_function_call");
+        let mut cursor = Cursor::new("Hello `func{World}", "parse_text_with_function_call");
         let expr = parse_text_expression(&mut cursor).unwrap();
 
         let expected = TextExpression {
@@ -631,5 +662,66 @@ mod tests {
         };
         
         assert_eq!(expr, expected);
+    }
+
+    #[test]
+    fn unexpected_character() {
+        let mut cursor = Cursor::new("`func[arg=val{Test}", "unexpected_character");
+        let err = parse_text_expression(&mut cursor).unwrap_err();
+
+        assert_eq!(err.message, "']' expected");
+        assert_eq!(err.context, "`func[arg=val{Test}");
+        assert_eq!(err.position.file, "unexpected_character");
+        assert_eq!(err.position.line, 0);
+        assert_eq!(err.position.col, 13);
+    }
+
+    #[test]
+    fn empty_argument_name() {
+        let mut cursor = Cursor::new("`func[=1]", "empty_argument_name");
+        let err = parse_text_expression(&mut cursor).unwrap_err();
+
+        assert_eq!(err.message, "Symbol expected");
+        assert_eq!(err.context, "`func[=1]");
+        assert_eq!(err.position.file, "empty_argument_name");
+        assert_eq!(err.position.line, 0);
+        assert_eq!(err.position.col, 6);
+    }
+
+    #[test]
+    fn dangling_backtick() {
+        let mut cursor = Cursor::new("there -> `", "dangling_backtick");
+        let err = parse_text_expression(&mut cursor).unwrap_err();
+
+        assert_eq!(err.message, "Dangling ` character");
+        assert_eq!(err.context, "there -> `");
+        assert_eq!(err.position.file, "dangling_backtick");
+        assert_eq!(err.position.line, 0);
+        assert_eq!(err.position.col, 9);
+    }
+
+    #[test]
+    fn unmatched_brace() {
+        let mut cursor = Cursor::new("there -> {  Hi", "unmatched_brace");
+        let err = parse_text_expression(&mut cursor).unwrap_err();
+
+        assert_eq!(err.message, "Unmatched left curly brace");
+        assert_eq!(err.context, "there -> {  Hi");
+        assert_eq!(err.position.file, "unmatched_brace");
+        assert_eq!(err.position.line, 0);
+        assert_eq!(err.position.col, 9);
+    }
+
+    // Error message contains correct line
+    #[test]
+    fn parse_error_contains_the_correct_context() {
+        let mut cursor = Cursor::new("Good line\nBad line`", "parse_error_contains_the_correct_context");
+        let err = parse_text_expression(&mut cursor).unwrap_err();
+
+        assert_eq!(err.message, "Dangling ` character");
+        assert_eq!(err.context, "Bad line`");
+        assert_eq!(err.position.file, "parse_error_contains_the_correct_context");
+        assert_eq!(err.position.line, 1);
+        assert_eq!(err.position.col, 8);
     }
 }
