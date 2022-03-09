@@ -7,18 +7,21 @@ mod expression_parser;
 use std::fmt::{Display, Formatter};
 use std::error::Error;
 
+/// A Matcher takes a string slice as input and returns a shorter slice according
+/// to its individual rules.
 trait Matcher {
+    /// Returns a shorter version of `input`, that matches this Matcher's rules.
+    /// If no match is found in the input, None is returned instead.
     fn find_match<'a>(&self, input: &'a str) -> Option<&'a str>;
-}
 
-enum MSType {
-    String(String),
-    Matcher(Box<dyn Matcher>)
+    /// If a Matcher will always match a known string, then return
+    /// that string, otherwise return None.
+    fn get_static_match(&self) -> Option<&str>;
 }
 
 enum Grapheme {
     Char(char),
-    Expression(MSType)
+    Matcher(Box<dyn Matcher>)
 }
 
 /// A representation of a location in a file.
@@ -26,6 +29,7 @@ enum Grapheme {
 pub struct CursorPosition {
     line: usize,
     col: usize,
+    offset: usize
 }
 
 #[derive(Debug)]
@@ -34,7 +38,7 @@ enum ParseErrorVariant {
     CharsExpected(Vec<char>),
 
     /// A specific token was expected, but another one turned up
-    TokenExpected(&'static str),
+    TokenExpected(String),
 
     /// A dangling backtick is an incomplete escape sequence
     DanglingBacktick,
@@ -43,19 +47,23 @@ enum ParseErrorVariant {
     UnmatchedBrace,
 
     /// An unknown function was called
-    FunctionNotFound(&'static str),
+    FunctionNotFound(String),
 
     /// A function got an unknown parameter
-    BadParameter(&'static str, &'static str),
+    BadParameter(String, String),
 
     /// A function got an invalid value for a parameter
-    BadArgument(&'static str, &'static str),
+    BadArgument(String, String),
 
     /// A function received the wrong number of texts
-    BadTextCount(&'static str, usize, usize),
+    BadTextCount(String, usize, usize),
+
+    /// A function required that a text section is known at parse time, but
+    /// that requirement was not met.
+    StaticMatchRequired,
 
     /// The error was caused by another error
-    External(&'static str, Box<dyn Error>)
+    External(String, Box<dyn Error>)
 }
 
 /// Helper function to construct an error message that lists all the
@@ -79,6 +87,7 @@ impl Display for ParseErrorVariant {
             Self::BadParameter(function_name, param_name) => write!(f, "Function '{}' does not take a parameter called '{}'", function_name, param_name),
             Self::BadArgument(param_name, hint) => write!(f, "Invalid value for parameter '{}'. {}", param_name, hint),
             Self::BadTextCount(function_name, expected, actual) => write!(f, "Function '{}' expects {} text sections but got {}", function_name, expected, actual),
+            Self::StaticMatchRequired => write!(f, "Text must be known at compile time"),
             Self::External(message, error) => write!(f, "{}: {}", message, error),
         }
     }
@@ -87,8 +96,7 @@ impl Display for ParseErrorVariant {
 /// Error returned when anything goes wrong during parsing.
 #[derive(Debug)]
 pub struct ParseError {
-    message: String,
-    context: String,
+    variant: ParseErrorVariant,
     position: CursorPosition
 }
 
