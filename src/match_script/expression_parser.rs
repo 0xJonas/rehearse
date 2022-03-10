@@ -1,7 +1,7 @@
 use super::{CursorPosition, ParseErrorVariant, ParseError};
 
 use std::iter::Peekable;
-use std::str::FromStr;
+use std::str::{FromStr, ParseBoolError};
 use std::fmt::{Display, Formatter, Error};
 
 /// AST node for any identifier that may be used.
@@ -418,7 +418,6 @@ fn parse_text_expression<'i>(cursor: &mut Cursor<'i>) -> Result<TextExpression, 
             '`' => {
                 let backtick_pos = cursor.get_position();
                 cursor.advance();
-                println!("{:?}", backtick_pos);
 
                 let next = cursor.peek();
 
@@ -458,6 +457,11 @@ fn parse_text_expression<'i>(cursor: &mut Cursor<'i>) -> Result<TextExpression, 
     }
 
     return Ok(TextExpression { segments, position })
+}
+
+pub fn parse_expression(text: &str) -> Result<TextExpression, ParseError> {
+    let mut cursor = Cursor::new(text);
+    parse_text_expression(&mut cursor)
 }
 
 #[cfg(test)]

@@ -1,15 +1,42 @@
 mod proto_parser;
 mod expression_parser;
-// mod functions;
+mod functions;
 
-// use tokio::io::AsyncReadExt;
+use expression_parser::Symbol;
+
+use tokio::io::AsyncReadExt;
 
 use std::fmt::{Display, Formatter};
 use std::error::Error;
+use std::collections::HashMap;
+
+/// Compiled version of ArgumentExpression. The only variant changed is the function call.
+enum CompiledArgument {
+    Symbol(Symbol),
+    Number(i64),
+    FunctionCall(Box<dyn Matcher>)
+}
+
+/// Type for a function that takes the arguments to a function call and creates a Matcher.
+type MatcherFunction = dyn Fn(&CursorPosition, &Vec<(Symbol, CompiledArgument)>, &Vec<Box<dyn Matcher>>) -> Result<Box<dyn Matcher>, ParseError>;
+
+/// Context in which all MatchScript definitions are stored
+pub struct MSContext<'a> {
+    functions: HashMap<Symbol, &'a MatcherFunction>
+}
+
+impl<'a> MSContext<'a> {
+
+    fn new() -> MSContext<'a> {
+        MSContext {
+            functions: HashMap::new()
+        }
+    }
+}
 
 /// A Matcher takes a string slice as input and returns a shorter slice according
 /// to its individual rules.
-trait Matcher {
+pub trait Matcher: std::fmt::Debug {
     /// Returns a shorter version of `input`, that matches this Matcher's rules.
     /// If no match is found in the input, None is returned instead.
     fn find_match<'a>(&self, input: &'a str) -> Option<&'a str>;
