@@ -44,10 +44,10 @@ fn verify_function_signature(
 )-> Result<(), ParseError> {
     // Check the number of text sections
     if texts.len() != signature.num_texts {
-        return Err(ParseError {
-            position: position.to_owned(),
-            variant: ParseErrorVariant::BadTextCount(signature.name.to_owned(), signature.num_texts, texts.len()) 
-        });
+        return Err(ParseError::new(
+            position.to_owned(),
+            ParseErrorVariant::BadTextCount(signature.name.to_owned(), signature.num_texts, texts.len())
+        ));
     }
 
     // Check each argument
@@ -56,10 +56,10 @@ fn verify_function_signature(
             if param == symbol {
                 continue 'arg_loop;
             }
-            return Err(ParseError {
-                position: position.to_owned(),
-                variant: ParseErrorVariant::BadParameter(signature.name.to_owned(), symbol.to_owned())
-            });
+            return Err(ParseError::new(
+                position.to_owned(),
+                ParseErrorVariant::BadParameter(signature.name.to_owned(), symbol.to_owned())
+            ));
         }
     }
 
@@ -115,12 +115,12 @@ fn build_regex_matcher(
         // TODO: What if there already is an "\A" at the start?
         Some(text) => match Regex::new(&["\\A", text].concat()) {
             Ok(regex) => Ok(Box::new(RegexMatcher { regex })),
-            Err(err) => Err(ParseError { 
-                position: position.to_owned(),
-                variant: ParseErrorVariant::External(format!("Could not parse {} as a regular expression", text), Box::new(err))
-            })
+            Err(err) => Err(ParseError::new(
+                position.to_owned(),
+                ParseErrorVariant::External(format!("Could not parse {} as a regular expression", text), Box::new(err))
+            ))
         },
-        None => return Err(ParseError { position: position.to_owned(), variant: ParseErrorVariant::StaticMatchRequired })
+        None => return Err(ParseError::new(position.to_owned(), ParseErrorVariant::StaticMatchRequired))
     };
 }
 
@@ -165,14 +165,14 @@ impl Matcher for TextExpressionMatcher {
 }
 
 /// Compiles a FunctionCall into the corresponding Matcher.
-fn compile_function_call(context: &MSContext<'_>, funcall: &FunctionCall) -> Result<Box<dyn Matcher>, ParseError> {
+fn compile_function_call(context: &MSContext, funcall: &FunctionCall) -> Result<Box<dyn Matcher>, ParseError> {
     // Lookup function name
     let matcher_function = match context.functions.get(&funcall.name) {
         Some(fun) => fun,
-        None => return Err(ParseError { 
-            position: funcall.position.to_owned(),
-            variant: ParseErrorVariant::FunctionNotFound(funcall.name.to_owned())
-        })
+        None => return Err(ParseError::new(
+            funcall.position.to_owned(),
+            ParseErrorVariant::FunctionNotFound(funcall.name.to_owned())
+        ))
     };
 
     // Compile arguments
@@ -196,7 +196,7 @@ fn compile_function_call(context: &MSContext<'_>, funcall: &FunctionCall) -> Res
 }
 
 /// Compiles a TextExpression into a TextExpressionMatcher.
-fn compile_text_expression(context: &MSContext<'_>, expr: &TextExpression) -> Result<TextExpressionMatcher, ParseError> {
+fn compile_text_expression(context: &MSContext, expr: &TextExpression) -> Result<TextExpressionMatcher, ParseError> {
     // Compile matchers
     let mut matchers: Vec<Box<dyn Matcher>> = Vec::with_capacity(expr.segments.len());
     for segment in &expr.segments {
@@ -227,7 +227,7 @@ pub fn add_standard_functions(context: &mut MSContext) -> () {
     context.functions.insert(FUN_ID_REGEX.to_owned(), &build_regex_matcher);
 }
 
-pub fn compile_expression(context: &MSContext<'_>, expr: &TextExpression) -> Result<Box<dyn Matcher>, ParseError> {
+pub fn compile_expression(context: &MSContext, expr: &TextExpression) -> Result<Box<dyn Matcher>, ParseError> {
     let compiled_expression = compile_text_expression(context, expr)?;
     Ok(Box::new(compiled_expression))
 }
@@ -237,7 +237,6 @@ mod tests {
 
     use super::{MSContext, compile_expression, add_standard_functions};
     use crate::match_script::{
-        ParseError,
         ParseErrorVariant,
         expression_parser::parse_expression
     };
@@ -263,14 +262,18 @@ mod tests {
         let expr = parse_expression("`regex{hello}{world}").unwrap();
         let mut context = MSContext::new();
         add_standard_functions(&mut context);
-        if let ParseError { position, variant: ParseErrorVariant::BadTextCount(name, 1, 2)} = compile_expression(&context, &expr).unwrap_err() {
-            assert_eq!(name, "regex");
-            assert_eq!(position.line, 0);
-            assert_eq!(position.col, 0);
-            assert_eq!(position.offset, 0);
-        } else {
-            assert!(false);
+        let error = compile_expression(&context, &expr).unwrap_err();
+        match error.get_variant() {
+            ParseErrorVariant::BadTextCount(name, expected, actual) => {
+                assert_eq!(name, "regex");
+                assert_eq!(*expected, 1);
+                assert_eq!(*actual, 2);
+            },
+            _ => assert!(false)
         }
+        let position = error.get_position();
+        assert_eq!(position.line, 0);
+        assert_eq!(position.col, 0);
     }
 
     #[test]
@@ -278,14 +281,14 @@ mod tests {
         let expr = parse_expression("`does_not_exist[arg=hi]{hello}{world}").unwrap();
         let mut context = MSContext::new();
         add_standard_functions(&mut context);
-        if let ParseError { position, variant: ParseErrorVariant::FunctionNotFound(name)} = compile_expression(&context, &expr).unwrap_err() {
-            assert_eq!(name, "does_not_exist");
-            assert_eq!(position.line, 0);
-            assert_eq!(position.col, 0);
-            assert_eq!(position.offset, 0);
-        } else {
-            assert!(false);
+        let error = compile_expression(&context, &expr).unwrap_err();
+        match error.get_variant() {
+            ParseErrorVariant::FunctionNotFound(name) => assert_eq!(name, "does_not_exist"),
+            _ => assert!(false)
         }
+        let position = error.get_position();
+        assert_eq!(position.line, 0);
+        assert_eq!(position.col, 0);
     }
 
     #[test]
@@ -317,12 +320,13 @@ mod tests {
         let expr = parse_expression("`regex{`regex{error}}").unwrap();
         let mut context = MSContext::new();
         add_standard_functions(&mut context);
-        if let ParseError { position, variant: ParseErrorVariant::StaticMatchRequired } = compile_expression(&context, &expr).unwrap_err() {
-            assert_eq!(position.line, 0);
-            assert_eq!(position.col, 0);
-            assert_eq!(position.offset, 0);
-        } else {
-            assert!(false);
+        let error = compile_expression(&context, &expr).unwrap_err();
+        match error.get_variant() {
+            ParseErrorVariant::StaticMatchRequired => {},
+            _ => assert!(false)
         }
+        let position = error.get_position();
+        assert_eq!(position.line, 0);
+        assert_eq!(position.col, 0);
     }
 }

@@ -1,10 +1,11 @@
+use super::{ParseError, ParseErrorVariant, CursorPosition};
+
 use tokio::io::AsyncReadExt;
-use encoding_rs::{UTF_8, Decoder, DecoderResult};
+use encoding_rs::{Decoder, DecoderResult};
 
 use std::iter::FromIterator;
-use std::path::Path;
 
-const BUFFER_REFILL_AMOUNT: usize = 1 << 20; // 1 MiB
+const BUFFER_REFILL_AMOUNT: usize = 8192;
 const LEXEME_LIMIT: usize = 4096;            // 4 KiB, must be smaller than BUFFER_REFILL_AMOUNT
 
 /// Reads until either the supplied buffer is full, or EOI is reached.
@@ -30,6 +31,7 @@ struct CharSource<R: AsyncReadExt + Unpin> {
     decode_strip_len: usize,
     decoder: Decoder,
     input: R,
+    position: CursorPosition,
     end_of_input: bool
 }
 
@@ -45,6 +47,7 @@ impl<R: AsyncReadExt + Unpin> CharSource<R> {
             decode_strip_len: 0,
             decoder,
             input,
+            position: CursorPosition::new(),
             end_of_input: false
         }
     }
@@ -55,7 +58,7 @@ impl<R: AsyncReadExt + Unpin> CharSource<R> {
     /// This function will append as many characters as the buffer can hold
     /// without reallocating (i.e. until `buffer.capacity()` is reached), or until
     /// the source is depleted.
-    async fn read_chars(&mut self, buffer: &mut [char]) -> std::io::Result<usize> {
+    async fn read_chars(&mut self, buffer: &mut [char]) -> Result<usize, ParseError> {
         if self.end_of_input {
             // if the end of input was reached in a previous call, the decoder will be invalid now,
             // so return early to prevent a panic.
@@ -70,7 +73,12 @@ impl<R: AsyncReadExt + Unpin> CharSource<R> {
         for i in 0..iterations {
             // Read new data
             let read_stop = read_buffer_len.min(buffer.len() - i * read_buffer_len);
-            let bytes_read = read_to_buffer(&mut self.read_buffer[self.decode_strip_len..read_stop], &mut self.input).await?;
+            let bytes_read = match read_to_buffer(&mut self.read_buffer[self.decode_strip_len..read_stop], &mut self.input).await {
+                Ok(bytes_read) => bytes_read,
+                Err(err) => {
+                    return Err(ParseError::new(self.position.clone(), ParseErrorVariant::IO(err)));
+                }
+            };
             let data_length = self.decode_strip_len + bytes_read;
             self.end_of_input = data_length < read_stop;
 
@@ -79,30 +87,25 @@ impl<R: AsyncReadExt + Unpin> CharSource<R> {
             utf8_buffer.reserve(data_length);
             let (res, bytes_decoded) = self.decoder.decode_to_string_without_replacement(&self.read_buffer[..data_length], &mut utf8_buffer, self.end_of_input);
 
+            // Handle potential error
             match res {
                 DecoderResult::Malformed(bad_bytes, _) => {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        format!(
-                            "Could not decode {:?} as valid {}",
-                            // The range has to be like this, because the malformed sequence counts as
-                            // part of the decoded bytes, even though it was not actually decoded.
-                            Vec::from(&self.read_buffer[bytes_decoded - bad_bytes as usize .. bytes_decoded]),
-                            self.decoder.encoding().name()
-                        )
-                    ))
+                    self.position.add_string(&utf8_buffer);
+                    // The range has to be like this, because the malformed sequence counts as
+                    // part of the decoded bytes, even though it was not actually decoded.
+                    return Err(ParseError::new(
+                        self.position.clone(),
+                        ParseErrorVariant::Encoding((&self.read_buffer[bytes_decoded - bad_bytes as usize .. bytes_decoded]).to_owned(), self.decoder.encoding())
+                    ));
                 },
                 DecoderResult::OutputFull if self.end_of_input && bytes_decoded < data_length => {
+                    self.position.add_string(&utf8_buffer);
                     // If the malformed sequence is at the end of the input and the utf8_buffer
                     // is almost full, encoding_rs does not return a 'Malformed' result.
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        format!(
-                            "Could not decode {:?} as valid {}",
-                            Vec::from(&self.read_buffer[bytes_decoded..data_length]),
-                            self.decoder.encoding().name()
-                        )
-                    ))
+                    return Err(ParseError::new(
+                        self.position.clone(),
+                        ParseErrorVariant::Encoding((&self.read_buffer[bytes_decoded..data_length]).to_owned(), self.decoder.encoding())
+                    ));
                 },
                 _ => {}
             }
@@ -116,6 +119,7 @@ impl<R: AsyncReadExt + Unpin> CharSource<R> {
                 buffer[buffer_offset] = c;
                 buffer_offset += 1;
             }
+            self.position.add_string(&utf8_buffer);
             utf8_buffer.clear();
 
             if self.end_of_input {
@@ -127,21 +131,28 @@ impl<R: AsyncReadExt + Unpin> CharSource<R> {
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProtoExpression {
+    pub expr: String,
+    pub position: CursorPosition
+}
+
 /// Early stage for a Grapheme, which is either
 /// a character or an unparsed expression.
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum ProtoGrapheme {
+#[derive(Clone, Debug, PartialEq)]
+pub enum ProtoGrapheme {
     Char(char),
-    ProtoExpression(String)
+    ProtoExpression(Box<ProtoExpression>)
 }
 
 /// Iterator-like object which creates the first stage of Graphemes from a data source.
-struct ProtoGraphemeSource<R: AsyncReadExt + Unpin> {
+pub struct ProtoGraphemeSource<R: AsyncReadExt + Unpin> {
     buffer: Vec<char>,
     buffer_pos: usize,
     buffer_content_len: usize,
     delimiter_tag: Vec<char>,
-    source: CharSource<R>
+    source: CharSource<R>,
+    position: CursorPosition
 }
 
 impl<R: AsyncReadExt + Unpin> ProtoGraphemeSource<R> {
@@ -156,7 +167,8 @@ impl<R: AsyncReadExt + Unpin> ProtoGraphemeSource<R> {
             buffer_pos: 0,
             buffer_content_len: 0,
             delimiter_tag: delimiter_tag.chars().collect(),
-            source
+            source,
+            position: CursorPosition::new()
         }
     }
 
@@ -164,7 +176,7 @@ impl<R: AsyncReadExt + Unpin> ProtoGraphemeSource<R> {
     /// filling the remaining space with new data.
     /// 
     /// This function resets `buffer_pos` to 0.
-    async fn top_up_buffer(&mut self) -> std::io::Result<()> {
+    async fn top_up_buffer(&mut self) -> Result<(), ParseError> {
         // Move remaining content in buffer to the beginning
         let tail_len = self.buffer_content_len - self.buffer_pos;
         self.buffer.copy_within(self.buffer_pos.. , 0);
@@ -186,10 +198,9 @@ impl<R: AsyncReadExt + Unpin> ProtoGraphemeSource<R> {
         }
     }
 
-    /// Attempts a ProtoExpression from the underlying CharSource. It is expected
+    /// Attempts to read a ProtoExpression from the underlying CharSource. It is expected
     /// that the current buffer_pos points to the left brace of the expression.
-    /// The return value will either be a ProtoGrapheme::ProtoExpression or None.
-    fn read_proto_expression(&mut self) -> Option<ProtoGrapheme> {
+    fn read_proto_expression(&mut self) -> Option<ProtoExpression> {
         let mut offset = 0;
 
         if !self.match_char(offset, '{') {
@@ -238,8 +249,20 @@ impl<R: AsyncReadExt + Unpin> ProtoGraphemeSource<R> {
 
             let expression_start = self.buffer_pos + expression_start_offset;
             let expression_end = self.buffer_pos + expression_end_offset;
+            let expr = String::from_iter(&self.buffer[expression_start .. expression_end]);
+
+            // Create CursorPosition for the new ProtoExpression
+            let delimiter_tag_str = &self.delimiter_tag.iter().collect::<String>();
+            let mut expr_position = self.position.clone();
+            expr_position.add_char('{').add_string(&delimiter_tag_str).add_char('|');
+
+            // Update the Source's CursorPosition
             self.buffer_pos += offset;
-            return Some(ProtoGrapheme::ProtoExpression(String::from_iter(&self.buffer[expression_start .. expression_end])));
+            self.position.add_char('{').add_string(&delimiter_tag_str).add_char('|');
+            self.position.add_string(&expr);
+            self.position.add_char('|').add_string(&delimiter_tag_str).add_char('}');
+
+            return Some(ProtoExpression { expr, position: expr_position });
         }
 
         // LEXEME_LIMIT was reached
@@ -249,10 +272,10 @@ impl<R: AsyncReadExt + Unpin> ProtoGraphemeSource<R> {
     /// Reads ProtoGraphemes from the underlying CharSource into the given `buffer`. Returns the number
     /// of ProtoGraphemes read. If less ProtoGraphemes were read than the given buffer is long, it means 
     /// that the underlying CharSource has reached its end of input.
-    pub async fn read_proto_graphemes(&mut self, buffer: &mut [ProtoGrapheme]) -> std::io::Result<usize> {
+    pub async fn read_proto_graphemes(&mut self, out_buffer: &mut [ProtoGrapheme]) -> Result<usize, ParseError> {
         let mut proto_graphemes_read = 0;
         
-        while proto_graphemes_read < buffer.len() {
+        for out_entry in out_buffer {
             // Refresh buffer if it has been read completely
             if self.buffer_pos >= self.buffer_content_len {
                 self.top_up_buffer().await?;
@@ -266,15 +289,17 @@ impl<R: AsyncReadExt + Unpin> ProtoGraphemeSource<R> {
 
                     match self.read_proto_expression() {
                         Some(expr) => {
-                            buffer[proto_graphemes_read] = expr;
+                            *out_entry = ProtoGrapheme::ProtoExpression(Box::new(expr));
                         },
                         None => {
-                            buffer[proto_graphemes_read] = ProtoGrapheme::Char('{');
+                            *out_entry = ProtoGrapheme::Char('{');
+                            self.position.add_char('{');
                             self.buffer_pos += 1;
                         }
                     }
                 } else {
-                    buffer[proto_graphemes_read] = ProtoGrapheme::Char(self.buffer[self.buffer_pos]);
+                    *out_entry = ProtoGrapheme::Char(self.buffer[self.buffer_pos]);
+                    self.position.add_char(self.buffer[self.buffer_pos]);
                     self.buffer_pos += 1;
                 }
 
@@ -290,13 +315,14 @@ impl<R: AsyncReadExt + Unpin> ProtoGraphemeSource<R> {
 #[cfg(test)]
 mod tests {
 
-    use super::{CharSource, ProtoGrapheme, ProtoGraphemeSource};
+    use super::{CharSource, ProtoExpression, ProtoGrapheme, ProtoGraphemeSource};
+    use crate::match_script::{ParseErrorVariant, CursorPosition};
     use quickcheck::{Arbitrary, Gen};
     use quickcheck_macros::quickcheck;
     use encoding_rs::UTF_8;
     use tokio::runtime::Builder;
 
-    use std::io::{Cursor, ErrorKind};
+    use std::io::Cursor;
 
     #[tokio::test]
     async fn char_source_returns_correct_chars() {
@@ -348,9 +374,17 @@ mod tests {
         let mut source = CharSource::new(UTF_8.new_decoder(), input, 10000);
         let mut buffer = ['\0'; 100];
 
-        let err = source.read_chars(&mut buffer).await.unwrap_err();
-        assert_eq!(err.kind(), ErrorKind::InvalidData);
-        assert_eq!(format!("{}", err), "Could not decode [255] as valid UTF-8");
+        let error = source.read_chars(&mut buffer).await.unwrap_err();
+        match error.get_variant() {
+            ParseErrorVariant::Encoding(bytes, encoding) => {
+                assert_eq!(bytes, &[255]);
+                assert_eq!(*encoding, UTF_8);
+            },
+            _ => assert!(false)
+        }
+        let position = error.get_position();
+        assert_eq!(position.line, 0);
+        assert_eq!(position.col, 6);
     }
 
     #[tokio::test]
@@ -359,9 +393,17 @@ mod tests {
         let mut source = CharSource::new(UTF_8.new_decoder(), input, 10000);
         let mut buffer = ['\0'; 100];
 
-        let err = source.read_chars(&mut buffer).await.unwrap_err();
-        assert_eq!(err.kind(), ErrorKind::InvalidData);
-        assert_eq!(format!("{}", err), "Could not decode [255] as valid UTF-8");
+        let error = source.read_chars(&mut buffer).await.unwrap_err();
+        match error.get_variant() {
+            ParseErrorVariant::Encoding(bytes, encoding) => {
+                assert_eq!(bytes, &[255]);
+                assert_eq!(*encoding, UTF_8);
+            },
+            _ => assert!(false)
+        }
+        let position = error.get_position();
+        assert_eq!(position.line, 0);
+        assert_eq!(position.col, 6);
     }
 
     impl Arbitrary for ProtoGrapheme {
@@ -370,9 +412,12 @@ mod tests {
             match g.choose(&[0, 1]) {
                 Some(0) => ProtoGrapheme::Char(char::arbitrary(g)),
                 Some(1) => {
-                    let mut content = String::arbitrary(g);
-                    content.retain(|c| c != '{' && c != '}' && c != '|');
-                    ProtoGrapheme::ProtoExpression(content)
+                    let mut expr = String::arbitrary(g);
+                    expr.retain(|c| c != '{' && c != '}' && c != '|');
+                    ProtoGrapheme::ProtoExpression(Box::new(ProtoExpression {
+                        expr,
+                        position: CursorPosition::new() // We don't know any actual position here and we also don't care
+                    }))
                 },
                 _ => unreachable!()
             }
@@ -381,23 +426,40 @@ mod tests {
         fn shrink(&self) -> Box<dyn Iterator<Item=Self>> {
             match &self {
                 ProtoGrapheme::Char(c) => Box::new(c.shrink().map(|c| ProtoGrapheme::Char(c))),
-                ProtoGrapheme::ProtoExpression(expr) => Box::new(expr.shrink().map(|expr| ProtoGrapheme::ProtoExpression(expr)))
+                ProtoGrapheme::ProtoExpression(expr) => Box::new(
+                    expr.expr.shrink().map(|new_expr| ProtoGrapheme::ProtoExpression(Box::new(ProtoExpression { expr: new_expr, position: CursorPosition::new() })))
+                )
             }
         }
     }
 
-    fn serialize_proto_graphemes(proto_graphemes: &[ProtoGrapheme], delimiter_tag: &str) -> String {
-        proto_graphemes.iter()
-            .map(|pg| match pg {
-                ProtoGrapheme::Char(c) => String::from(*c),
-                ProtoGrapheme::ProtoExpression(str) => format!("{{{}|{}|{}}}", delimiter_tag, str, delimiter_tag)
-            })
-            .collect::<String>()
+    fn serialize_and_fill_positions(proto_graphemes: &mut [ProtoGrapheme], delimiter_tag: &str) -> String {
+        let mut position = CursorPosition::new();
+        let mut out = String::new();
+        
+        for proto_grapheme in proto_graphemes {
+            match proto_grapheme {
+                ProtoGrapheme::Char(c) => {
+                    position.add_char(*c);
+                    out.push(*c);
+                },
+                ProtoGrapheme::ProtoExpression(expr) => {
+                    let mut expr_position = position.clone();
+                    expr_position.add_char('{').add_string(delimiter_tag).add_char('|');
+                    expr.position = expr_position;
+
+                    let tag = format!("{{{}|{}|{}}}", delimiter_tag, expr.expr, delimiter_tag);
+                    out.push_str(&tag);
+                    position.add_string(&tag);
+                }
+            }
+        }
+        return out;
     }
 
     #[quickcheck]
-    fn serializing_a_proto_grapheme_iterator_yields_the_original_string(proto_graphemes: Vec<ProtoGrapheme>, delimiter_tag: String) -> bool {
-        let input = serialize_proto_graphemes(&proto_graphemes, &delimiter_tag);
+    fn serializing_a_proto_grapheme_iterator_yields_the_original_string(mut proto_graphemes: Vec<ProtoGrapheme>, delimiter_tag: String) -> bool {
+        let input = serialize_and_fill_positions(&mut proto_graphemes, &delimiter_tag);
         if input.len() > 100000 {
             // Skip if the input is too long. This keeps the test from taking forever.
             return true;
@@ -412,7 +474,14 @@ mod tests {
         let rt = Builder::new_current_thread().build().unwrap();
         return rt.block_on(async {
             proto_grapheme_source.read_proto_graphemes(&mut output[..]).await.unwrap();
-            proto_graphemes == output
+            // println!("Delimiter: {:?}\nInput:  {:?}\nOutput: {:?}", delimiter_tag, proto_graphemes, output);
+            if proto_graphemes == output {
+                // println!("OK");
+                true
+            } else {
+                // println!("ERROR");
+                false
+            }
         });
     }
 }

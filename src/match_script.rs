@@ -5,10 +5,12 @@ mod functions;
 use expression_parser::Symbol;
 
 use tokio::io::AsyncReadExt;
+use encoding_rs::Encoding;
 
 use std::fmt::{Display, Formatter};
 use std::error::Error;
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 /// Compiled version of ArgumentExpression. The only variant changed is the function call.
 enum CompiledArgument {
@@ -21,13 +23,13 @@ enum CompiledArgument {
 type MatcherFunction = dyn Fn(&CursorPosition, &Vec<(Symbol, CompiledArgument)>, &Vec<Box<dyn Matcher>>) -> Result<Box<dyn Matcher>, ParseError>;
 
 /// Context in which all MatchScript definitions are stored
-pub struct MSContext<'a> {
-    functions: HashMap<Symbol, &'a MatcherFunction>
+pub struct MSContext {
+    functions: HashMap<Symbol, &'static MatcherFunction>
 }
 
-impl<'a> MSContext<'a> {
+impl MSContext {
 
-    fn new() -> MSContext<'a> {
+    fn new() -> MSContext {
         MSContext {
             functions: HashMap::new()
         }
@@ -46,7 +48,7 @@ pub trait Matcher: std::fmt::Debug {
     fn get_static_match(&self) -> Option<&str>;
 }
 
-enum Grapheme {
+pub enum Grapheme {
     Char(char),
     Matcher(Box<dyn Matcher>)
 }
@@ -55,12 +57,49 @@ enum Grapheme {
 #[derive(Clone, Debug, PartialEq)]
 pub struct CursorPosition {
     line: usize,
-    col: usize,
-    offset: usize
+    col: usize
+}
+
+impl CursorPosition {
+
+    pub fn new() -> CursorPosition {
+        CursorPosition {
+            line: 0,
+            col: 0
+        }
+    }
+
+    pub fn add_char(&mut self, c: char) -> &mut Self {
+        if c == '\n' {
+            self.line += 1;
+            self.col = 0;
+        } else {
+            self.col += 1;
+        }
+        return self;
+    }
+
+    pub fn add_string(&mut self, str: &str) -> &mut Self {
+        str.chars().for_each(|c| { self.add_char(c); });
+        return self;
+    }
+
+    pub fn add_position(&mut self, other: &CursorPosition) -> &mut Self {
+        self.line += other.line;
+        if other.line == 0 {
+            self.col += other.col;
+        } else {
+            self.col = other.col;
+        }
+
+        return self;
+    }
 }
 
 #[derive(Debug)]
 enum ParseErrorVariant {
+    // Parsing errors
+
     /// A specific character was expected, but another one turned up
     CharsExpected(Vec<char>),
 
@@ -72,6 +111,8 @@ enum ParseErrorVariant {
 
     /// The end of input was encountered when there were still unmatched braces
     UnmatchedBrace,
+
+    // Compilation errors
 
     /// An unknown function was called
     FunctionNotFound(String),
@@ -88,6 +129,14 @@ enum ParseErrorVariant {
     /// A function required that a text section is known at parse time, but
     /// that requirement was not met.
     StaticMatchRequired,
+
+    // Miscellaneous errors
+
+    /// The encoding of the input had an error
+    Encoding(Vec<u8>, &'static Encoding),
+
+    /// An IO-Error occurred
+    IO(std::io::Error),
 
     /// The error was caused by another error
     External(String, Box<dyn Error>)
@@ -115,6 +164,8 @@ impl Display for ParseErrorVariant {
             Self::BadArgument(param_name, hint) => write!(f, "Invalid value for parameter '{}'. {}", param_name, hint),
             Self::BadTextCount(function_name, expected, actual) => write!(f, "Function '{}' expects {} text sections but got {}", function_name, expected, actual),
             Self::StaticMatchRequired => write!(f, "Text must be known at compile time"),
+            Self::Encoding(bytes, encoding) => write!(f, "Could not decode {:?} as valid {}", bytes, encoding.name()),
+            Self::IO(error) => write!(f, "IO error: {}", error),
             Self::External(message, error) => write!(f, "{}: {}", message, error),
         }
     }
@@ -124,9 +175,50 @@ impl Display for ParseErrorVariant {
 #[derive(Debug)]
 pub struct ParseError {
     variant: ParseErrorVariant,
-    position: CursorPosition
+    position: CursorPosition,
+    context: Option<String>,
+    context_position: Option<CursorPosition>,
+    file: Option<PathBuf>
 }
 
-// async fn read_graphemes<R: AsyncReadExt + Unpin>(source: &mut R, buffer: &mut [Grapheme]) -> Result<usize, ()> {
+impl ParseError {
 
-// }
+    fn new(position: CursorPosition, variant: ParseErrorVariant) -> ParseError {
+        ParseError {
+            position, 
+            variant,
+            context: None,
+            context_position: None,
+            file: None
+        }
+    }
+
+    pub fn get_position(&self) -> &CursorPosition {
+        &self.position
+    }
+
+    fn get_variant(&self) -> &ParseErrorVariant {
+        &self.variant
+    }
+
+    fn set_context(&mut self, context_position: CursorPosition, context: String) -> () {
+        self.context_position = Some(context_position);
+        self.context = Some(context);
+    }
+
+    fn get_context(&self) -> Option<(&CursorPosition, &String)> {
+        if self.context.is_some() && self.context_position.is_some() {
+            Some((self.context_position.as_ref().unwrap(), self.context.as_ref().unwrap()))
+        } else {
+            None
+        }
+    }
+
+    fn set_file(&mut self, file: PathBuf) -> () {
+        self.file = Some(file);
+    }
+
+    fn get_file(&self) -> Option<&PathBuf> {
+        self.file.as_ref()
+    }
+}

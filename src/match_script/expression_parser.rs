@@ -170,11 +170,7 @@ impl<'a> Cursor<'a> {
         Cursor {
             content,
             iter: content.chars().peekable(),
-            position: CursorPosition {
-                line: 0,
-                col: 0,
-                offset: 0
-            }
+            position: CursorPosition::new()
         }
     }
 
@@ -186,13 +182,8 @@ impl<'a> Cursor<'a> {
 
     /// Advances the Cursor to the next character.
     fn advance(&mut self) -> () {
-        if let Some(&c) = self.iter.peek() {
-            self.position.col += 1;
-            self.position.offset += c.len_utf8();
-            if let Some('\n') = self.iter.next() {
-                self.position.col = 0;
-                self.position.line += 1;
-            }
+        if let Some(c) = self.iter.next() {
+            self.position.add_char(c);
         }
     }
 
@@ -206,14 +197,14 @@ impl<'a> Cursor<'a> {
                 Ok(())
             } else {
                 // A char that was not expected was found
-                Err(ParseError { position: self.get_position().to_owned(), variant: ParseErrorVariant::CharsExpected(Vec::from(chars)) })
+                Err(ParseError::new(self.get_position().to_owned(), ParseErrorVariant::CharsExpected(Vec::from(chars))))
             }
         } else if chars.len() == 0 {
             // Cursor is empty, but nothing was expected
             Ok(())
         } else {
             // Cursor is empty, but something was expected
-            Err(ParseError { position: self.get_position().to_owned(), variant: ParseErrorVariant::CharsExpected(Vec::from(chars)) })
+            Err(ParseError::new(self.get_position().to_owned(), ParseErrorVariant::CharsExpected(Vec::from(chars))))
         }
     }
 
@@ -252,7 +243,7 @@ fn parse_symbol(cursor: &mut Cursor) -> Result<Symbol, ParseError> {
     return if symbol.len() > 0 {
         Ok(symbol)
     } else {
-        Err(ParseError { position: cursor.get_position().to_owned(), variant: ParseErrorVariant::TokenExpected("symbol".to_owned()) })
+        Err(ParseError::new(cursor.get_position().to_owned(), ParseErrorVariant::TokenExpected("symbol".to_owned())))
     }
 }
 
@@ -283,13 +274,13 @@ fn parse_number(cursor: &mut Cursor) -> Result<i64, ParseError> {
     return if number_str.len() > 0 {
         match i64::from_str(&number_str) {
             Ok(v) => Ok(v * sign),
-            Err(e) => Err(ParseError {
-                position: cursor.get_position().to_owned(),
-                variant: ParseErrorVariant::External("Could not parse number".to_owned(), Box::new(e)) 
-            })
+            Err(e) => Err(ParseError::new(
+                cursor.get_position().to_owned(),
+                ParseErrorVariant::External("Could not parse number".to_owned(), Box::new(e)) 
+            ))
         }
     } else {
-        Err(ParseError { position: cursor.get_position().to_owned(), variant: ParseErrorVariant::TokenExpected("number".to_owned()) })
+        Err(ParseError::new(cursor.get_position().to_owned(), ParseErrorVariant::TokenExpected("number".to_owned())))
     }
 }
 
@@ -311,10 +302,10 @@ fn parse_argument<'i>(cursor: &mut Cursor<'i>) -> Result<(Symbol, ArgumentExpres
         },
         Some(c) if c.is_ascii_digit() || c == '-' => ArgumentExpression::Number(parse_number(cursor)?),
         Some(c) if c.is_ascii_alphabetic() || c == '_' => ArgumentExpression::Symbol(parse_symbol(cursor)?),
-        _ => return Err( ParseError {
-            position: cursor.get_position().to_owned(),
-            variant: ParseErrorVariant::TokenExpected("symbol, number of function call".to_owned()) 
-        })
+        _ => return Err( ParseError::new(
+            cursor.get_position().to_owned(),
+            ParseErrorVariant::TokenExpected("symbol, number of function call".to_owned()) 
+        ))
     };
 
     return Ok((argument_name, argument_expr));
@@ -334,9 +325,6 @@ fn parse_function_call<'i>(cursor: &mut Cursor<'i>) -> Result<FunctionCall, Pars
     // but just to be safe, we wrap it in an 'if'
     if position.col > 0 {
         position.col -= 1;
-    }
-    if position.offset > 0 {
-        position.offset -= 1;
     }
     
     // Parse name
@@ -428,7 +416,7 @@ fn parse_text_expression<'i>(cursor: &mut Cursor<'i>) -> Result<TextExpression, 
                         cursor.advance();
                     },
                     None => {
-                        return Err(ParseError { position: backtick_pos, variant: ParseErrorVariant::DanglingBacktick });
+                        return Err(ParseError::new(backtick_pos, ParseErrorVariant::DanglingBacktick));
                     },
                     _ => {
                         // Function call
@@ -449,7 +437,7 @@ fn parse_text_expression<'i>(cursor: &mut Cursor<'i>) -> Result<TextExpression, 
     }
 
     if brace_nesting != 0 {
-        return Err(ParseError { position: last_left_brace.to_owned(), variant: ParseErrorVariant::UnmatchedBrace });
+        return Err(ParseError::new(last_left_brace.to_owned(), ParseErrorVariant::UnmatchedBrace));
     }
 
     if current_string.len() != 0 {
@@ -467,7 +455,7 @@ pub fn parse_expression(text: &str) -> Result<TextExpression, ParseError> {
 #[cfg(test)]
 mod tests {
 
-    use crate::match_script::{CursorPosition, ParseError};
+    use crate::match_script::CursorPosition;
     use super::*;
 
     #[test]
@@ -482,11 +470,11 @@ mod tests {
                         name: "test".to_owned(),
                         arguments: Vec::new(),
                         texts: Vec::new(),
-                        position: CursorPosition { line: 0, col: 0, offset: 0 }
+                        position: CursorPosition { line: 0, col: 0 }
                     }
                 )
             ],
-            position: CursorPosition { line: 0, col: 0, offset: 0 }
+            position: CursorPosition { line: 0, col: 0 }
         };
         
         assert_eq!(expr, expected);
@@ -504,11 +492,11 @@ mod tests {
                         name: "test".to_owned(),
                         arguments: vec![("arg1".to_owned(), ArgumentExpression::Symbol("something".to_owned()))],
                         texts: Vec::new(),
-                        position: CursorPosition { line: 0, col: 0, offset: 0 }
+                        position: CursorPosition { line: 0, col: 0 }
                     }
                 )
             ],
-            position: CursorPosition { line: 0, col: 0, offset: 0 }
+            position: CursorPosition { line: 0, col: 0 }
         };
         
         assert_eq!(expr, expected);
@@ -527,13 +515,13 @@ mod tests {
                         arguments: Vec::new(),
                         texts: vec![TextExpression {
                             segments: vec![TextExpressionSegment::String("This is a test".to_owned())],
-                            position: CursorPosition { line: 0, col: 6, offset: 6 }
+                            position: CursorPosition { line: 0, col: 6 }
                         }],
-                        position: CursorPosition { line: 0, col: 0, offset: 0 }
+                        position: CursorPosition { line: 0, col: 0 }
                     }
                 )
             ],
-            position: CursorPosition { line: 0, col: 0, offset: 0 }
+            position: CursorPosition { line: 0, col: 0 }
         };
 
         assert_eq!(expr, expected);
@@ -552,13 +540,13 @@ mod tests {
                         arguments: vec![(String::from("arg1"), ArgumentExpression::Symbol("something".to_owned()))],
                         texts: vec![TextExpression {
                             segments: vec![TextExpressionSegment::String("This is a test".to_owned())],
-                            position: CursorPosition { line: 0, col: 24, offset: 24 }
+                            position: CursorPosition { line: 0, col: 24 }
                         }],
-                        position: CursorPosition { line: 0, col: 0, offset: 0 }
+                        position: CursorPosition { line: 0, col: 0 }
                     }
                 )
             ],
-            position: CursorPosition { line: 0, col: 0, offset: 0 }
+            position: CursorPosition { line: 0, col: 0 }
         };
 
         assert_eq!(expr, expected);
@@ -583,17 +571,17 @@ mod tests {
                                 arguments: Vec::new(),
                                 texts: vec![TextExpression {
                                     segments: vec![TextExpressionSegment::String("Hello".to_owned())],
-                                    position: CursorPosition { line: 0, col: 60, offset: 60 }
+                                    position: CursorPosition { line: 0, col: 60 }
                                 }],
-                                position: CursorPosition { line: 0, col: 53, offset: 53 }
+                                position: CursorPosition { line: 0, col: 53 }
                             })),
                         ],
                         texts: Vec::new(),
-                        position: CursorPosition { line: 0, col: 0, offset: 0 }
+                        position: CursorPosition { line: 0, col: 0 }
                     }
                 )
             ],
-            position: CursorPosition { line: 0, col: 0, offset: 0 }
+            position: CursorPosition { line: 0, col: 0 }
         };
         
         assert_eq!(expr, expected);
@@ -608,7 +596,7 @@ mod tests {
             segments: vec![
                 TextExpressionSegment::String("Hello, World".to_owned())
             ],
-            position: CursorPosition { line: 0, col: 0, offset: 0 }
+            position: CursorPosition { line: 0, col: 0 }
         };
 
         assert_eq!(expr, expected);
@@ -623,7 +611,7 @@ mod tests {
             segments: vec![
                 TextExpressionSegment::String("{}{{}}{}\\{\\}".to_owned())
             ],
-            position: CursorPosition { line: 0, col: 0, offset: 0 }
+            position: CursorPosition { line: 0, col: 0 }
         };
         
         assert_eq!(expr, expected);
@@ -642,12 +630,12 @@ mod tests {
                     arguments: Vec::new(),
                     texts: vec![TextExpression {
                         segments: vec![TextExpressionSegment::String("World".to_owned())],
-                        position: CursorPosition { line: 0, col: 12, offset: 12 }
+                        position: CursorPosition { line: 0, col: 12 }
                     }],
-                    position: CursorPosition { line: 0, col: 6, offset: 6 }
+                    position: CursorPosition { line: 0, col: 6 }
                 })
             ],
-            position: CursorPosition { line: 0, col: 0, offset: 0 }
+            position: CursorPosition { line: 0, col: 0 }
         };
         
         assert_eq!(expr, expected);
@@ -656,59 +644,66 @@ mod tests {
     #[test]
     fn unexpected_character() {
         let mut cursor = Cursor::new("`func[arg=val{Test}");
-        if let ParseError { variant: ParseErrorVariant::CharsExpected(chars), position } = parse_text_expression(&mut cursor).unwrap_err() {
-            assert_eq!(chars.len(), 1);
-            assert_eq!(chars[0], ']');
-            assert_eq!(position.line, 0);
-            assert_eq!(position.col, 13);
-        } else {
-            assert!(false);
+        let error = parse_text_expression(&mut cursor).unwrap_err();
+        match error.get_variant() {
+            ParseErrorVariant::CharsExpected(chars) => assert_eq!(chars, &[']']),
+            _ => assert!(false)
         }
+        let position = error.get_position();
+        assert_eq!(position.line, 0);
+        assert_eq!(position.col, 13);
     }
 
     #[test]
     fn empty_argument_name() {
         let mut cursor = Cursor::new("`func[=1]");
-        if let ParseError { variant: ParseErrorVariant::TokenExpected(token), position } = parse_text_expression(&mut cursor).unwrap_err() {
-            assert_eq!(token, "symbol");
-            assert_eq!(position.line, 0);
-            assert_eq!(position.col, 6);
-        } else {
-            assert!(false);
+        let error = parse_text_expression(&mut cursor).unwrap_err();
+        match error.get_variant() {
+            ParseErrorVariant::TokenExpected(token) => assert_eq!(token, "symbol"),
+            _ => assert!(false)
         }
+        let position = error.get_position();
+        assert_eq!(position.line, 0);
+        assert_eq!(position.col, 6);
     }
 
     #[test]
     fn dangling_backtick() {
         let mut cursor = Cursor::new("there -> `");
-        if let ParseError { variant: ParseErrorVariant::DanglingBacktick, position } = parse_text_expression(&mut cursor).unwrap_err() {
-            assert_eq!(position.line, 0);
-            assert_eq!(position.col, 9);
-        } else {
-            assert!(false);
+        let error = parse_text_expression(&mut cursor).unwrap_err();
+        match error.get_variant() {
+            ParseErrorVariant::DanglingBacktick => {},
+            _ => assert!(false)
         }
+        let position = error.get_position();
+        assert_eq!(position.line, 0);
+        assert_eq!(position.col, 9);
     }
 
     #[test]
     fn unmatched_brace() {
         let mut cursor = Cursor::new("there -> {  Hi");
-        if let ParseError { variant: ParseErrorVariant::UnmatchedBrace, position } = parse_text_expression(&mut cursor).unwrap_err() {
-            assert_eq!(position.line, 0);
-            assert_eq!(position.col, 9);
-        } else {
-            assert!(false);
+        let error = parse_text_expression(&mut cursor).unwrap_err();
+        match error.get_variant() {
+            &ParseErrorVariant::UnmatchedBrace => {},
+            _ => assert!(false)
         }
+        let position = error.get_position();
+        assert_eq!(position.line, 0);
+        assert_eq!(position.col, 9);
     }
 
     // Error message contains correct line
     #[test]
     fn parse_error_contains_the_correct_context() {
         let mut cursor = Cursor::new("Good line\nBad line`");
-        if let ParseError { variant: ParseErrorVariant::DanglingBacktick, position } = parse_text_expression(&mut cursor).unwrap_err() {
-            assert_eq!(position.line, 1);
-            assert_eq!(position.col, 8);
-        } else {
-            assert!(false);
+        let error = parse_text_expression(&mut cursor).unwrap_err();
+        match error.get_variant() {
+            ParseErrorVariant::DanglingBacktick => {},
+            _ => assert!(false)
         }
+        let position = error.get_position();
+        assert_eq!(position.line, 1);
+        assert_eq!(position.col, 8);
     }
 }
