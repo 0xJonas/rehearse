@@ -107,7 +107,7 @@ impl ColorTerminal {
     pub fn new(color_mode: TermColorMode) -> ColorTerminal {
         ColorTerminal {
             stdout: Arc::new(std::io::stdout()),
-            color_mode: color_mode
+            color_mode
         }
     }
 
@@ -197,8 +197,8 @@ impl Drop for ColorTerminal {
 /// Specifically, a StringTerminal cannot display color and does not buffer
 /// the output.
 pub struct StringTerminal {
-    pub buffer: String,
-    pub size: (usize, usize)
+    buffer: String,
+    size: (usize, usize)
 }
 
 impl StringTerminal {
@@ -207,8 +207,12 @@ impl StringTerminal {
     pub fn new(size: (usize, usize)) -> StringTerminal {
         StringTerminal {
             buffer: String::new(),
-            size: size
+            size
         }
+    }
+
+    pub fn get_buffer(&self) -> &str {
+        &self.buffer
     }
 }
 

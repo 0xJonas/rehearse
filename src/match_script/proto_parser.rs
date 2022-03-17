@@ -1,7 +1,7 @@
 use super::{ParseError, ParseErrorVariant, CursorPosition};
 
 use tokio::io::AsyncReadExt;
-use encoding_rs::{Decoder, DecoderResult};
+use encoding_rs::{Encoding, Decoder, DecoderResult};
 
 use std::iter::FromIterator;
 
@@ -31,6 +31,7 @@ struct CharSource<R: AsyncReadExt + Unpin> {
     decode_strip_len: usize,
     decoder: Decoder,
     input: R,
+    input_name: String,
     position: CursorPosition,
     end_of_input: bool
 }
@@ -39,17 +40,22 @@ impl<R: AsyncReadExt + Unpin> CharSource<R> {
 
     /// Creates a new `AsyncCharSource` from the given `input`, using a `decoder` and a read buffer
     /// of size `buffer_size`.
-    fn new(decoder: Decoder, input: R, buffer_size: usize) -> CharSource<R> {
+    fn new(encoding: &'static Encoding, input: R, input_name: &str, buffer_size: usize) -> CharSource<R> {
         let mut read_buffer = Vec::with_capacity(buffer_size);
         read_buffer.resize(buffer_size, 0);
         CharSource {
             read_buffer,
             decode_strip_len: 0,
-            decoder,
+            decoder: encoding.new_decoder(),
             input,
+            input_name: input_name.to_owned(),
             position: CursorPosition::new(),
             end_of_input: false
         }
+    }
+
+    pub fn get_input_name(&self) -> &str {
+        &self.input_name
     }
 
     /// Appends characters from the source to the given `buffer`. Returns `true`
@@ -170,6 +176,10 @@ impl<R: AsyncReadExt + Unpin> ProtoGraphemeSource<R> {
             source,
             position: CursorPosition::new()
         }
+    }
+
+    pub fn get_input_name(&self) -> &str {
+        &self.source.input_name
     }
 
     /// Refills the internal buffer by discarding already read data and
@@ -327,7 +337,7 @@ mod tests {
     #[tokio::test]
     async fn char_source_returns_correct_chars() {
         let input = Cursor::new("Test1234");
-        let mut source = CharSource::new(UTF_8.new_decoder(), input, 10000);
+        let mut source = CharSource::new(UTF_8, input, "char_source_returns_correct_chars", 10000);
         let mut buffer = ['\0'; 100];
         assert_eq!(source.read_chars(&mut buffer).await.unwrap(), 8);
         assert_eq!(&buffer[..8], vec!['T', 'e', 's', 't', '1', '2', '3', '4']);
@@ -336,7 +346,7 @@ mod tests {
     #[tokio::test]
     async fn char_source_works_with_multiple_calls() {
         let input = Cursor::new("Test1234");
-        let mut source = CharSource::new(UTF_8.new_decoder(), input, 10000);
+        let mut source = CharSource::new(UTF_8, input, "char_source_works_with_multiple_calls", 10000);
         let mut buffer = ['\0'; 4];
 
         assert_eq!(source.read_chars(&mut buffer).await.unwrap(), 4);
@@ -351,7 +361,7 @@ mod tests {
     #[tokio::test]
     async fn char_source_works_with_multibyte_chars() {
         let input = Cursor::new("Test 🧪");
-        let mut source = CharSource::new(UTF_8.new_decoder(), input, 10000);
+        let mut source = CharSource::new(UTF_8, input, "char_source_works_with_multibyte_chars", 10000);
         let mut buffer = ['\0'; 100];
 
         assert_eq!(source.read_chars(&mut buffer).await.unwrap(), 6);
@@ -361,7 +371,7 @@ mod tests {
     #[tokio::test]
     async fn char_source_works_with_buffer_sizes_not_aligned_to_char_boundaries() {
         let input = Cursor::new("Test 🧪");
-        let mut source = CharSource::new(UTF_8.new_decoder(), input, 4);
+        let mut source = CharSource::new(UTF_8, input, "char_source_works_with_buffer_sizes_not_aligned_to_char_boundaries", 4);
         let mut buffer = ['\0'; 100];
 
         assert_eq!(source.read_chars(&mut buffer).await.unwrap(), 6);
@@ -371,7 +381,7 @@ mod tests {
     #[tokio::test]
     async fn char_source_rejects_malformed_bytes_at_the_end() {
         let input = Cursor::new(b"Error \xff");
-        let mut source = CharSource::new(UTF_8.new_decoder(), input, 10000);
+        let mut source = CharSource::new(UTF_8, input, "char_source_rejects_malformed_bytes_at_the_end", 10000);
         let mut buffer = ['\0'; 100];
 
         let error = source.read_chars(&mut buffer).await.unwrap_err();
@@ -390,7 +400,7 @@ mod tests {
     #[tokio::test]
     async fn char_source_rejects_malformed_bytes_in_the_middle() {
         let input = Cursor::new(b"Error \xff More stuff");
-        let mut source = CharSource::new(UTF_8.new_decoder(), input, 10000);
+        let mut source = CharSource::new(UTF_8, input, "char_source_rejects_malformed_bytes_in_the_middle", 10000);
         let mut buffer = ['\0'; 100];
 
         let error = source.read_chars(&mut buffer).await.unwrap_err();
@@ -466,7 +476,7 @@ mod tests {
         }
 
         let cursor = Cursor::new(input);
-        let char_source = CharSource::new(UTF_8.new_decoder(), cursor, 100000 * 4);
+        let char_source = CharSource::new(UTF_8, cursor, "serializing_a_proto_grapheme_iterator_yields_the_original_string", 100000 * 4);
         let mut proto_grapheme_source = ProtoGraphemeSource::new(char_source, &delimiter_tag, 100000);
         let mut output = Vec::with_capacity(proto_graphemes.len());
         output.resize(proto_graphemes.len(), ProtoGrapheme::Char('\0'));

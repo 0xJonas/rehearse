@@ -10,7 +10,12 @@ use encoding_rs::Encoding;
 use std::fmt::{Display, Formatter};
 use std::error::Error;
 use std::collections::HashMap;
-use std::path::PathBuf;
+
+use crate::cli::{TermColor, Terminal, write_blanks};
+
+use self::expression_parser::parse_expression;
+use self::functions::{add_standard_functions, compile_expression};
+use self::proto_parser::{ProtoGraphemeSource, ProtoGrapheme};
 
 /// Compiled version of ArgumentExpression. The only variant changed is the function call.
 enum CompiledArgument {
@@ -171,6 +176,53 @@ impl Display for ParseErrorVariant {
     }
 }
 
+fn get_usable_context<'a>(context: &'a str, position: &CursorPosition, max_length: usize) -> Option<(&'a str, usize)> {
+    // Find the correct line in the context
+    let mut line_num = position.line;
+    let mut line_start = 0;
+    for c in context.chars() {
+        if line_num <= 0 {
+            break;
+        }
+        line_start += c.len_utf8();
+        if c == '\n' {
+            line_num -= 1;
+        }
+    }
+
+    if line_num > 0 {
+        // Not enough lines in the context
+        return None;
+    }
+
+    let mut line_end = line_start;
+    for c in context[line_start..].chars() {
+        line_end += c.len_utf8();
+        if c == '\n' {
+            break;
+        }
+    }
+
+    let line = &context[line_start..line_end];
+
+    if line.len() <= max_length {
+        // If the line is shorter than max_length, return the whole line
+        return Some((line, 0));
+    } else {
+        // Otherwise return max_length characters around the col
+        let half_max_length = max_length / 2;
+        if position.col < half_max_length {
+            return Some((&line[..max_length], 0));
+        } else if position.col >= line.len() - half_max_length {
+            let offset = line.len() - half_max_length;
+            return Some((&line[offset..], offset));
+        } else {
+            let offset = position.col - half_max_length;
+            return Some((&line[offset..(offset + max_length)], offset));
+        }
+    }
+}
+
 /// Error returned when anything goes wrong during parsing.
 #[derive(Debug)]
 pub struct ParseError {
@@ -178,7 +230,7 @@ pub struct ParseError {
     position: CursorPosition,
     context: Option<String>,
     context_position: Option<CursorPosition>,
-    file: Option<PathBuf>
+    input_name: Option<String>
 }
 
 impl ParseError {
@@ -189,7 +241,7 @@ impl ParseError {
             variant,
             context: None,
             context_position: None,
-            file: None
+            input_name: None
         }
     }
 
@@ -201,24 +253,241 @@ impl ParseError {
         &self.variant
     }
 
-    fn set_context(&mut self, context_position: CursorPosition, context: String) -> () {
+    fn set_context(&mut self, context_position: CursorPosition, context: &str) -> () {
         self.context_position = Some(context_position);
-        self.context = Some(context);
+        self.context = Some(context.to_owned());
     }
 
-    fn get_context(&self) -> Option<(&CursorPosition, &String)> {
-        if self.context.is_some() && self.context_position.is_some() {
-            Some((self.context_position.as_ref().unwrap(), self.context.as_ref().unwrap()))
-        } else {
-            None
+    fn set_input_name(&mut self, input_name: &str) -> () {
+        self.input_name = Some(input_name.to_owned());
+    }
+
+    pub fn write<T: Terminal>(&self, terminal: &mut T) -> std::io::Result<()> {
+        // Error: Syntax error: ',' expected
+        // ╭── ./examples/hello-world/stderr.expected:5:1 ─
+        // │
+        // │     Hello Error!
+        // │         ^
+        // ╰──
+
+        terminal.reset_color()?;
+
+        // Error message
+        terminal.set_color_fg(&TermColor::Error)?;
+        terminal.write("Error: ")?;
+        terminal.set_color_fg(&TermColor::Highlight)?;
+        terminal.write(format!("{}\n", self.variant))?;
+
+        let position = match &self.context_position {
+            Some(context_position) => {
+                let mut position = context_position.clone();
+                position.add_position(&self.position);
+                position
+            },
+            None => self.position.clone()
+        };
+
+        let max_length = terminal.size()?.0;
+        let context = self.context.as_ref().and_then(|c| get_usable_context(&c, &self.position, max_length));
+
+        terminal.set_color_fg(&TermColor::Error)?;
+        match (context, &self.input_name) {
+            (Some((line, offset)), Some(input_name)) => {
+                terminal.write(format!("╭── {}:{}:{} ───\n", input_name, position.line + 1, position.col + 1))?;
+                terminal.write("│\n│     ")?;
+                terminal.reset_color()?;
+                terminal.write(line)?;
+                terminal.set_color_fg(&TermColor::Error)?;
+                terminal.write("\n│     ")?;
+                write_blanks(terminal, self.position.col - offset)?;
+                terminal.set_color_fg(&TermColor::Highlight)?;
+                terminal.write("^\n")?;
+                terminal.set_color_fg(&TermColor::Error)?;
+                terminal.write("╰──\n\n")?;
+            },
+            (None, Some(input_name)) => {
+                terminal.write(format!("─── {}:{}:{} ───\n\n", input_name, position.line + 1, position.col + 1))?;
+            }
+            (Some((line, offset)), None) => {
+                terminal.write(format!("╭── On line {}, col {} ───\n", position.line + 1, position.col + 1))?;
+                terminal.write("│\n│     ")?;
+                terminal.reset_color()?;
+                terminal.write(line)?;
+                terminal.set_color_fg(&TermColor::Error)?;
+                terminal.write("\n│     ")?;
+                write_blanks(terminal, self.position.col - offset)?;
+                terminal.set_color_fg(&TermColor::Highlight)?;
+                terminal.write("^\n")?;
+                terminal.set_color_fg(&TermColor::Error)?;
+                terminal.write("╰──\n\n")?;
+            },
+            (None, None) => {
+                terminal.write(format!("─── On line {}, col {} ───\n\n", position.line + 1, position.col + 1))?;
+            }
+        }
+
+        Ok(())
+    }
+}
+
+pub struct GraphemeSource<R: AsyncReadExt + Unpin> {
+    proto_grapheme_source: ProtoGraphemeSource<R>,
+    buffer: Vec<ProtoGrapheme>,
+    context: MSContext
+}
+
+impl<R: AsyncReadExt + Unpin> GraphemeSource<R> {
+
+    pub fn new(proto_grapheme_source: ProtoGraphemeSource<R>, buffer_size: usize) -> GraphemeSource<R> {
+        let mut buffer = Vec::with_capacity(buffer_size);
+        buffer.resize(buffer_size, ProtoGrapheme::Char('\0'));
+        let mut context = MSContext::new();
+        add_standard_functions(&mut context);
+        return GraphemeSource {
+            proto_grapheme_source,
+            buffer,
+            context
         }
     }
 
-    fn set_file(&mut self, file: PathBuf) -> () {
-        self.file = Some(file);
+    pub async fn read_graphemes(&mut self, out_buffer: &mut [Grapheme]) -> Result<usize, ParseError> {
+        let mut graphemes_read_total = 0;
+        while graphemes_read_total < out_buffer.len() {
+            let read_stop = self.buffer.len().min(out_buffer.len() - graphemes_read_total);
+            let graphemes_read = match self.proto_grapheme_source.read_proto_graphemes(&mut self.buffer[..read_stop]).await {
+                Ok(graphemes_read) => graphemes_read,
+                Err(mut err) => {
+                    err.set_input_name(&self.proto_grapheme_source.get_input_name());
+                    return Err(err);
+                }
+            };
+
+            for (proto_grapheme, grapheme) in self.buffer[..read_stop].iter().zip(out_buffer[graphemes_read_total..].iter_mut()) {
+                *grapheme = match proto_grapheme {
+                    // Char grapheme
+                    ProtoGrapheme::Char(c) => Grapheme::Char(*c),
+
+                    // Expression grapheme
+                    ProtoGrapheme::ProtoExpression(expr) => {
+                        let context = &expr.expr;
+                        let context_position = &expr.position;
+
+                        // Parse
+                        let parsed_expr = match parse_expression(&expr.expr) {
+                            Ok(parsed_expr) => parsed_expr,
+                            Err(mut err) => {
+                                err.set_context(context_position.to_owned(), context);
+                                err.set_input_name(&self.proto_grapheme_source.get_input_name());
+                                return Err(err);
+                            }
+                        };
+
+                        // Compile
+                        let matcher = match compile_expression(&self.context, &parsed_expr) {
+                            Ok(matcher) => matcher,
+                            Err(mut err) => {
+                                err.set_context(context_position.to_owned(), context);
+                                err.set_input_name(&self.proto_grapheme_source.get_input_name());
+                                return Err(err);
+                            }
+                        };
+
+                        Grapheme::Matcher(matcher)
+                    }
+                }
+            }
+
+            graphemes_read_total += graphemes_read;
+            if graphemes_read < read_stop {
+                // End of input was reached
+                return Ok(graphemes_read_total);
+            }
+        }
+        return Ok(graphemes_read_total);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    use super::{ParseError, CursorPosition, ParseErrorVariant};
+    use crate::cli::StringTerminal;
+
+    #[test]
+    fn parse_error_diagnostic_with_name_with_context() -> () {
+        let mut error = ParseError::new(CursorPosition { line: 0, col: 2 }, ParseErrorVariant::FunctionNotFound("test".to_owned()));
+        error.set_context(CursorPosition { line: 5, col: 5 }, "0123456789");
+        error.set_input_name("parse_error_diagnostic_with_name_with_context");
+
+        let mut string_terminal = StringTerminal::new((80, 40));
+        error.write(&mut string_terminal).unwrap();
+
+        let expected = 
+r"Error: No function 'test' found
+╭── parse_error_diagnostic_with_name_with_context:6:8 ───
+│
+│     0123456789
+│       ^
+╰──
+
+";      
+        assert_eq!(expected, string_terminal.get_buffer());
     }
 
-    fn get_file(&self) -> Option<&PathBuf> {
-        self.file.as_ref()
+    #[test]
+    fn parse_error_diagnostic_with_name_without_context() -> () {
+        let mut error = ParseError::new(CursorPosition { line: 0, col: 2 }, ParseErrorVariant::FunctionNotFound("test".to_owned()));
+        error.set_input_name("parse_error_diagnostic_with_name_with_context");
+
+        let mut string_terminal = StringTerminal::new((80, 40));
+        error.write(&mut string_terminal).unwrap();
+
+        let expected = 
+r"Error: No function 'test' found
+─── parse_error_diagnostic_with_name_with_context:1:3 ───
+
+";
+        assert_eq!(expected, string_terminal.get_buffer());
     }
+
+    #[test]
+    fn parse_error_diagnostic_without_name_with_context() -> () {
+        let mut error = ParseError::new(CursorPosition { line: 0, col: 2 }, ParseErrorVariant::FunctionNotFound("test".to_owned()));
+        error.set_context(CursorPosition { line: 5, col: 5 }, "0123456789");
+
+        let mut string_terminal = StringTerminal::new((80, 40));
+        error.write(&mut string_terminal).unwrap();
+
+        let expected = 
+r"Error: No function 'test' found
+╭── On line 6, col 8 ───
+│
+│     0123456789
+│       ^
+╰──
+
+";
+        assert_eq!(expected, string_terminal.get_buffer());
+    }
+
+    #[test]
+    fn parse_error_diagnostic_without_name_without_context() -> () {
+        let error = ParseError::new(CursorPosition { line: 0, col: 2 }, ParseErrorVariant::FunctionNotFound("test".to_owned()));
+
+        let mut string_terminal = StringTerminal::new((80, 40));
+        error.write(&mut string_terminal).unwrap();
+
+        let expected = 
+r"Error: No function 'test' found
+─── On line 6, col 8 ───
+
+";
+        assert_eq!(expected, string_terminal.get_buffer());
+    }
+
+    // Test GraphemeSource without errors
+
+    // Test GraphemeSource with decoding error
+    // Test GraphemeSource with parsing error
+    // Test GraphemeSource with compiler error
 }
