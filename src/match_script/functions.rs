@@ -5,25 +5,56 @@
 //! with the arguments given in the call. This will return a new Matcher that will correspond
 //! to the given set of arguments.
 
-use std::str::ParseBoolError;
-
-use super::{
-    CompiledArgument,
-    MSContext,
-    Matcher,
-    ParseErrorVariant,
-    CursorPosition,
-    ParseError
-};
-use crate::match_script::expression_parser::{
-    Symbol,
-    TextExpression,
-    TextExpressionSegment,
-    FunctionCall,
-    ArgumentExpression
+use crate::match_script::{
+    expression_parser::{
+        Symbol,
+        TextExpression,
+        TextExpressionSegment,
+        FunctionCall,
+        ArgumentExpression
+    },
+    error::{ParseError, ParseErrorVariant, CursorPosition}
 };
 
 use regex::Regex;
+
+use std::collections::HashMap;
+
+/// Compiled version of ArgumentExpression. The only variant changed is the function call.
+enum CompiledArgument {
+    Symbol(Symbol),
+    Number(i64),
+    FunctionCall(Box<dyn Matcher>)
+}
+
+/// Type for a function that takes the arguments to a function call and creates a Matcher.
+type MatcherFunction = dyn Fn(&CursorPosition, &Vec<(Symbol, CompiledArgument)>, &Vec<Box<dyn Matcher>>) -> Result<Box<dyn Matcher>, ParseError>;
+
+/// Context in which all MatchScript definitions are stored
+pub struct MSContext {
+    functions: HashMap<Symbol, &'static MatcherFunction>
+}
+
+impl MSContext {
+
+    pub fn new() -> MSContext {
+        MSContext {
+            functions: HashMap::new()
+        }
+    }
+}
+
+/// A Matcher takes a string slice as input and returns a shorter slice according
+/// to its individual rules.
+pub trait Matcher: std::fmt::Debug {
+    /// Returns a shorter version of `input`, that matches this Matcher's rules.
+    /// If no match is found in the input, None is returned instead.
+    fn find_match<'a>(&self, input: &'a str) -> Option<&'a str>;
+
+    /// If a Matcher will always match a known string, then return
+    /// that string, otherwise return None.
+    fn get_static_match(&self) -> Option<&str>;
+}
 
 const FUN_ID_REGEX: &'static str = "regex";
 
@@ -237,7 +268,7 @@ mod tests {
 
     use super::{MSContext, compile_expression, add_standard_functions};
     use crate::match_script::{
-        ParseErrorVariant,
+        error::ParseErrorVariant,
         expression_parser::parse_expression
     };
 

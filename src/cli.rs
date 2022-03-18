@@ -251,7 +251,7 @@ impl Terminal for StringTerminal {
 /// # use rehearse::cli::{StringTerminal, write_blanks};
 /// let mut terminal = StringTerminal::new((80, 40));
 /// write_blanks(&mut terminal, 10);
-/// assert_eq!(terminal.buffer, "          ");
+/// assert_eq!(terminal.get_buffer(), "          ");
 /// ```
 pub fn write_blanks<T: Terminal>(terminal: &mut T, len: usize) -> std::io::Result<()> {
     let mut blanks = String::with_capacity(len);
@@ -458,7 +458,7 @@ impl ArgTemplate {
     /// ";
     /// 
     /// arg_template.write_usage(&mut terminal, "my_prog").unwrap();
-    /// assert_eq!(terminal.buffer, reference);
+    /// assert_eq!(terminal.get_buffer(), reference);
     /// ```
     pub fn write_usage<T: Terminal>(&self, terminal: &mut T, program_name: &str) -> std::io::Result<()> {
         trace!("Printing help text...");

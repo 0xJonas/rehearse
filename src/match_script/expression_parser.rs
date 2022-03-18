@@ -1,4 +1,4 @@
-use super::{CursorPosition, ParseErrorVariant, ParseError};
+use crate::match_script::error::{ParseError, ParseErrorVariant, CursorPosition};
 
 use std::iter::Peekable;
 use std::str::{FromStr, ParseBoolError};
@@ -455,7 +455,7 @@ pub fn parse_expression(text: &str) -> Result<TextExpression, ParseError> {
 #[cfg(test)]
 mod tests {
 
-    use crate::match_script::CursorPosition;
+    use crate::match_script::error::CursorPosition;
     use super::*;
 
     #[test]
