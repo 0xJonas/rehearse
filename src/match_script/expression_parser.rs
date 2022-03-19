@@ -1,11 +1,11 @@
 use crate::match_script::error::{ParseError, ParseErrorVariant, CursorPosition};
 
 use std::iter::Peekable;
-use std::str::{FromStr, ParseBoolError};
+use std::str::FromStr;
 use std::fmt::{Display, Formatter, Error};
 
 /// AST node for any identifier that may be used.
-/// 
+///
 /// A Symbol is a string that only contains alphanumeric characters and underscores.
 /// Symbols always start with an uppercase or lowercase letter.
 pub type Symbol = String;
@@ -30,7 +30,7 @@ impl Display for ArgumentExpression {
 }
 
 /// AST node for function call expressions.
-/// 
+///
 /// A function call can take any number of key-value pairs as arguments,
 /// as well as any number of text expressions to operate on.
 #[derive(Debug, PartialEq)]
@@ -72,7 +72,7 @@ pub enum TextExpressionSegment {
 
 /// Escapes certain characters in a [str] so that it can be unambiguously parsed
 /// by `parse_text_expression`.
-/// 
+///
 /// This essentially amounts to adding a '`' before any '`' as well as any unmatched
 /// left or right brace.
 fn escape_text(str: &str) -> String {
@@ -148,7 +148,7 @@ impl Display for TextExpression {
 }
 
 /// Primary source of characters for the parsing functions.
-/// 
+///
 /// This type offers some convenience methods for parsing as well as keeping
 /// track of the current position in the input.
 struct Cursor<'a> {
@@ -226,7 +226,7 @@ fn skip_whitespace(cursor: &mut Cursor) -> () {
 }
 
 /// Parses a Symbol.
-/// 
+///
 /// A Symbol starts with either an upper- or lowercase character and contains
 /// only alphanumeric characters and underscores.
 fn parse_symbol(cursor: &mut Cursor) -> Result<Symbol, ParseError> {
@@ -248,7 +248,7 @@ fn parse_symbol(cursor: &mut Cursor) -> Result<Symbol, ParseError> {
 }
 
 /// Parses a number.
-/// 
+///
 /// Numbers are signed 64-bit integers.
 fn parse_number(cursor: &mut Cursor) -> Result<i64, ParseError> {
     let mut number_str = String::new();
@@ -276,7 +276,7 @@ fn parse_number(cursor: &mut Cursor) -> Result<i64, ParseError> {
             Ok(v) => Ok(v * sign),
             Err(e) => Err(ParseError::new(
                 cursor.get_position().to_owned(),
-                ParseErrorVariant::External("Could not parse number".to_owned(), Box::new(e)) 
+                ParseErrorVariant::External("Could not parse number".to_owned(), Box::new(e))
             ))
         }
     } else {
@@ -285,7 +285,7 @@ fn parse_number(cursor: &mut Cursor) -> Result<i64, ParseError> {
 }
 
 /// Reads a key-value pair representing an argument of a function call.
-/// 
+///
 /// Arguments have the syntax `<argument> := <symbol> '=' <argument-expr>`.
 /// ArgumentExpressions can be a symbol, a number or a function call: `<argument-expr> := <symbol> | <number> | <function-call>`.
 fn parse_argument<'i>(cursor: &mut Cursor<'i>) -> Result<(Symbol, ArgumentExpression), ParseError> {
@@ -304,7 +304,7 @@ fn parse_argument<'i>(cursor: &mut Cursor<'i>) -> Result<(Symbol, ArgumentExpres
         Some(c) if c.is_ascii_alphabetic() || c == '_' => ArgumentExpression::Symbol(parse_symbol(cursor)?),
         _ => return Err( ParseError::new(
             cursor.get_position().to_owned(),
-            ParseErrorVariant::TokenExpected("symbol, number of function call".to_owned()) 
+            ParseErrorVariant::TokenExpected("symbol, number of function call".to_owned())
         ))
     };
 
@@ -312,7 +312,7 @@ fn parse_argument<'i>(cursor: &mut Cursor<'i>) -> Result<(Symbol, ArgumentExpres
 }
 
 /// Parses a function call.
-/// 
+///
 /// A function call can take any number of arguments as well as any number of text expressions to operate on.
 /// The syntax for a function call is:
 /// ```text
@@ -326,7 +326,7 @@ fn parse_function_call<'i>(cursor: &mut Cursor<'i>) -> Result<FunctionCall, Pars
     if position.col > 0 {
         position.col -= 1;
     }
-    
+
     // Parse name
     let name = parse_symbol(cursor)?;
     let mut arguments = Vec::new();
@@ -360,7 +360,7 @@ fn parse_function_call<'i>(cursor: &mut Cursor<'i>) -> Result<FunctionCall, Pars
 }
 
 /// Parses a text expression.
-/// 
+///
 /// TextExpressions are the root element of an expression. They can contain ordinary text or function calls.
 /// Normal text can contain control characters, if they are escaped. To write any of '`', '{' or '}', precede them
 /// with a '`' to create the character sequences '``', '`{' or '`}'. It is possible to write unescaped curly braces
@@ -476,10 +476,10 @@ mod tests {
             ],
             position: CursorPosition { line: 0, col: 0 }
         };
-        
+
         assert_eq!(expr, expected);
     }
-    
+
     #[test]
     fn parse_function_call_with_arguments() {
         let mut cursor = Cursor::new("`test[arg1 = something]");
@@ -498,7 +498,7 @@ mod tests {
             ],
             position: CursorPosition { line: 0, col: 0 }
         };
-        
+
         assert_eq!(expr, expected);
     }
 
@@ -526,12 +526,12 @@ mod tests {
 
         assert_eq!(expr, expected);
     }
-    
+
     #[test]
     fn parse_function_call_with_arguments_and_texts() {
         let mut cursor = Cursor::new("`test[arg1 = something]{This is a test}");
         let expr = parse_text_expression(&mut cursor).unwrap();
-        
+
         let expected = TextExpression {
             segments: vec![
                 TextExpressionSegment::FunctionCall(
@@ -583,7 +583,7 @@ mod tests {
             ],
             position: CursorPosition { line: 0, col: 0 }
         };
-        
+
         assert_eq!(expr, expected);
     }
 
@@ -613,7 +613,7 @@ mod tests {
             ],
             position: CursorPosition { line: 0, col: 0 }
         };
-        
+
         assert_eq!(expr, expected);
     }
 
@@ -637,7 +637,7 @@ mod tests {
             ],
             position: CursorPosition { line: 0, col: 0 }
         };
-        
+
         assert_eq!(expr, expected);
     }
 

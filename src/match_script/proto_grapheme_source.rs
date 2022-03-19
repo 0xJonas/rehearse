@@ -48,13 +48,14 @@ impl<R: AsyncReadExt + Unpin> ProtoGraphemeSource<R> {
         }
     }
 
+    /// Returns the name of the input from which this ProtoGraphemeSource is reading.
     pub fn get_input_name(&self) -> &str {
         &self.source.get_input_name()
     }
 
     /// Refills the internal buffer by discarding already read data and
     /// filling the remaining space with new data.
-    /// 
+    ///
     /// This function resets `buffer_pos` to 0.
     async fn top_up_buffer(&mut self) -> Result<(), ParseError> {
         // Move remaining content in buffer to the beginning
@@ -150,17 +151,16 @@ impl<R: AsyncReadExt + Unpin> ProtoGraphemeSource<R> {
     }
 
     /// Reads ProtoGraphemes from the underlying CharSource into the given `buffer`. Returns the number
-    /// of ProtoGraphemes read. If less ProtoGraphemes were read than the given buffer is long, it means 
-    /// that the underlying CharSource has reached its end of input.
+    /// of ProtoGraphemes read.
     pub async fn read_proto_graphemes(&mut self, out_buffer: &mut [ProtoGrapheme]) -> Result<usize, ParseError> {
         let mut proto_graphemes_read = 0;
-        
+
         for out_entry in out_buffer {
             // Refresh buffer if it has been read completely
             if self.buffer_pos >= self.buffer_content_len {
                 self.top_up_buffer().await?;
             }
-            
+
             if self.buffer_pos < self.buffer_content_len {
                 if self.buffer[self.buffer_pos] == '{' {
                     if self.buffer_pos + LEXEME_LIMIT >= self.buffer_content_len {
@@ -234,7 +234,7 @@ mod tests {
     fn serialize_and_fill_positions(proto_graphemes: &mut [ProtoGrapheme], delimiter_tag: &str) -> String {
         let mut position = CursorPosition::new();
         let mut out = String::new();
-        
+
         for proto_grapheme in proto_graphemes {
             match proto_grapheme {
                 ProtoGrapheme::Char(c) => {
