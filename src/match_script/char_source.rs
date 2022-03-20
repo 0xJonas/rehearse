@@ -31,7 +31,7 @@ pub struct CharSource<R: AsyncReadExt + Unpin> {
     position: CursorPosition,
     byte_offset: usize,
     char_offset: usize,
-    end_of_input: bool
+    input_exhausted: bool
 }
 
 impl<R: AsyncReadExt + Unpin> CharSource<R> {
@@ -51,7 +51,7 @@ impl<R: AsyncReadExt + Unpin> CharSource<R> {
             position: CursorPosition::new(),
             byte_offset: 0,
             char_offset: 0,
-            end_of_input: false
+            input_exhausted: false
         }
     }
 
@@ -66,10 +66,16 @@ impl<R: AsyncReadExt + Unpin> CharSource<R> {
         (self.byte_offset, self.char_offset)
     }
 
+    /// Returns true if all chars from this CharSource have been read.
+    pub fn is_end_of_input(&self) -> bool {
+        self.input_exhausted && self.read_buffer_offset >= self.read_buffer_content_len
+    }
+
     async fn top_up_buffer(&mut self) -> std::io::Result<()> {
         let tail_len = self.read_buffer_content_len - self.read_buffer_offset;
         self.read_buffer.copy_within(self.read_buffer_offset.., 0);
         let bytes_read = read_to_buffer(&mut self.read_buffer[tail_len..], &mut self.input).await?;
+        self.input_exhausted = bytes_read < self.read_buffer.len() - tail_len;
         self.read_buffer_offset = 0;
         self.read_buffer_content_len = tail_len + bytes_read;
         Ok(())
@@ -80,7 +86,7 @@ impl<R: AsyncReadExt + Unpin> CharSource<R> {
         let out_buffer_len = out_buffer.len();
         assert!(out_buffer_len <= self.read_buffer.len());
 
-        if self.end_of_input || out_buffer_len < 4 {
+        if self.is_end_of_input() || out_buffer_len < 4 {
             // encode_rs does not like buffers shorter than 4 bytes.
             // Even though the out_buffer contains characters instead of bytes,
             // at some points it is approximated that 1 byte == 1 char.
@@ -96,13 +102,12 @@ impl<R: AsyncReadExt + Unpin> CharSource<R> {
                 return Err(ParseError::new(self.position.clone(), ParseErrorVariant::IO(err)));
             }
         }
-        self.end_of_input = out_buffer_len >= self.read_buffer_content_len - self.read_buffer_offset;
 
         // Decode new data
         let (res, bytes_decoded) = self.decoder.decode_to_string_without_replacement(
             &self.read_buffer[self.read_buffer_offset..self.read_buffer_content_len],
             &mut utf8_buffer,
-            self.end_of_input
+            self.input_exhausted
         );
 
         // Handle potential error
@@ -117,7 +122,7 @@ impl<R: AsyncReadExt + Unpin> CharSource<R> {
                 ));
             },
             DecoderResult::OutputFull => {
-                if  self.end_of_input
+                if  self.input_exhausted
                     && (self.read_buffer_offset + bytes_decoded < self.read_buffer_content_len)
                     && (self.read_buffer_offset + bytes_decoded + 4 > self.read_buffer_content_len)
                 {
@@ -181,10 +186,12 @@ mod tests {
         assert_eq!(source.read_chars(&mut buffer).await.unwrap(), 4);
         assert_eq!(&buffer[..4], vec!['T', 'e', 's', 't']);
         assert_eq!(source.get_input_offset(), (4, 4));
+        assert!(!source.is_end_of_input());
 
         assert_eq!(source.read_chars(&mut buffer).await.unwrap(), 4);
         assert_eq!(&buffer[..4], vec!['1', '2', '3', '4']);
         assert_eq!(source.get_input_offset(), (8, 8));
+        assert!(source.is_end_of_input());
 
         assert_eq!(source.read_chars(&mut buffer).await.unwrap(), 0);
     }

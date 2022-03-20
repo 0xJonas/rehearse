@@ -39,6 +39,11 @@ impl<R: AsyncReadExt + Unpin> GraphemeSource<R> {
         }
     }
 
+    /// Returns true is all Graphemes from this GraphemeSource have been read.
+    pub fn is_end_of_input(&self) -> bool {
+        self.proto_grapheme_source.is_end_of_input()
+    }
+
     /// Reads Graphemes into the given `out_buffer`.
     pub async fn read_graphemes(&mut self, out_buffer: &mut [Grapheme]) -> Result<usize, ParseError> {
         let mut graphemes_read_total = 0;
@@ -102,7 +107,7 @@ impl<R: AsyncReadExt + Unpin> GraphemeSource<R> {
 
 #[cfg(test)]
 mod tests {
-    
+
     use std::io::Cursor;
 
     use encoding_rs::UTF_8;
@@ -123,6 +128,7 @@ mod tests {
 
         let graphemes_read = grapheme_source.read_graphemes(&mut output[..]).await.unwrap();
         assert_eq!(graphemes_read, 8);
+        assert!(grapheme_source.is_end_of_input());
         match output[0] {
             Grapheme::Char(c) => assert_eq!(c, 'H'),
             _ => assert!(false)

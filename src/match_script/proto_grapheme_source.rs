@@ -53,6 +53,11 @@ impl<R: AsyncReadExt + Unpin> ProtoGraphemeSource<R> {
         &self.source.get_input_name()
     }
 
+    /// Returns ture if all ProtoGraphemes from this ProtoGraphemeSource have been read.
+    pub fn is_end_of_input(&self) -> bool {
+        self.source.is_end_of_input() && self.buffer_pos >= self.buffer_content_len
+    }
+
     /// Refills the internal buffer by discarding already read data and
     /// filling the remaining space with new data.
     ///
