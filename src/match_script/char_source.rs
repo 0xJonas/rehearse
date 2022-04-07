@@ -60,9 +60,9 @@ impl<R: AsyncReadExt + Unpin> CharSource<R> {
         &self.input_name
     }
 
-    /// Gets the offset up which has been read by the CharSource,
+    /// Gets the offsets up to which data has been read by the CharSource,
     /// in the form `(byte_offset, char_offset)`.
-    pub fn get_input_offset(&self) -> (usize, usize) {
+    pub fn get_input_offsets(&self) -> (usize, usize) {
         (self.byte_offset, self.char_offset)
     }
 
@@ -111,34 +111,14 @@ impl<R: AsyncReadExt + Unpin> CharSource<R> {
         );
 
         // Handle potential error
-        match res {
-            DecoderResult::Malformed(bad_bytes, _) => {
-                self.position.add_string(&utf8_buffer);
-                // The range has to be like this, because the malformed sequence counts as
-                // part of the decoded bytes, even though it was not actually decoded.
-                return Err(ParseError::new(
-                    self.position.clone(),
-                    ParseErrorVariant::Encoding((&self.read_buffer[bytes_decoded - bad_bytes as usize .. bytes_decoded]).to_owned(), self.decoder.encoding())
-                ));
-            },
-            DecoderResult::OutputFull => {
-                if  self.input_exhausted
-                    && (self.read_buffer_offset + bytes_decoded < self.read_buffer_content_len)
-                    && (self.read_buffer_offset + bytes_decoded + 4 > self.read_buffer_content_len)
-                {
-                    self.position.add_string(&utf8_buffer);
-                    // If the malformed sequence is at the end of the input and the utf8_buffer
-                    // is almost full, encoding_rs does not return a 'Malformed' result.
-                    return Err(ParseError::new(
-                        self.position.clone(),
-                        ParseErrorVariant::Encoding(
-                            (&self.read_buffer[self.read_buffer_offset + bytes_decoded..self.read_buffer_content_len]).to_owned(),
-                            self.decoder.encoding()
-                        )
-                    ));
-                }
-            },
-            _ => {}
+        if let DecoderResult::Malformed(bad_bytes, _) = res {
+            self.position.add_string(&utf8_buffer);
+            // The range has to be like this, because the malformed sequence counts as
+            // part of the decoded bytes, even though it was not actually decoded.
+            return Err(ParseError::new(
+                self.position.clone(),
+                ParseErrorVariant::Encoding((&self.read_buffer[bytes_decoded - bad_bytes as usize .. bytes_decoded]).to_owned(), self.decoder.encoding())
+            ));
         }
 
         // Write new characters to the buffer
@@ -174,7 +154,7 @@ mod tests {
         let mut buffer = ['\0'; 100];
         assert_eq!(source.read_chars(&mut buffer).await.unwrap(), 8);
         assert_eq!(&buffer[..8], vec!['T', 'e', 's', 't', '1', '2', '3', '4']);
-        assert_eq!(source.get_input_offset(), (8, 8));
+        assert_eq!(source.get_input_offsets(), (8, 8));
     }
 
     #[tokio::test]
@@ -185,12 +165,12 @@ mod tests {
 
         assert_eq!(source.read_chars(&mut buffer).await.unwrap(), 4);
         assert_eq!(&buffer[..4], vec!['T', 'e', 's', 't']);
-        assert_eq!(source.get_input_offset(), (4, 4));
+        assert_eq!(source.get_input_offsets(), (4, 4));
         assert!(!source.is_end_of_input());
 
         assert_eq!(source.read_chars(&mut buffer).await.unwrap(), 4);
         assert_eq!(&buffer[..4], vec!['1', '2', '3', '4']);
-        assert_eq!(source.get_input_offset(), (8, 8));
+        assert_eq!(source.get_input_offsets(), (8, 8));
         assert!(source.is_end_of_input());
 
         assert_eq!(source.read_chars(&mut buffer).await.unwrap(), 0);
@@ -204,7 +184,20 @@ mod tests {
 
         assert_eq!(source.read_chars(&mut buffer).await.unwrap(), 6);
         assert_eq!(&buffer[..6], vec!['T', 'e', 's', 't', ' ', '🧪']);
-        assert_eq!(source.get_input_offset(), (9, 6));
+        assert_eq!(source.get_input_offsets(), (9, 6));
+    }
+
+    #[tokio::test]
+    async fn char_source_works_with_multibyte_chars_with_multiple_calls() {
+        let input = Cursor::new("Test 🧪");
+        let mut source = CharSource::new(UTF_8, input, "char_source_works_with_multibyte_chars_with_multiple_calls", 6);
+        let mut buffer = ['\0'; 6];
+
+        assert_eq!(source.read_chars(&mut buffer).await.unwrap(), 5);
+        assert_eq!(&buffer[..5], vec!['T', 'e', 's', 't', ' ']);
+        assert_eq!(source.read_chars(&mut buffer).await.unwrap(), 1);
+        assert_eq!(&buffer[..1], vec!['🧪']);
+        assert_eq!(source.get_input_offsets(), (9, 6));
     }
 
     #[tokio::test]

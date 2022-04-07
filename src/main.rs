@@ -1,7 +1,7 @@
-mod priority_queue;
 mod test_cases;
 mod cli;
 mod match_script;
+mod diff;
 
 use cli::{Terminal, ColorTerminal, TermColorMode, TermColor, ArgTemplate, Arg, ArgError, ArgResult};
 use test_cases::get_default_test_options;
@@ -65,7 +65,7 @@ fn get_default_color_mode() -> TermColorMode {
     let tput_output = Command::new("tput")
         .arg("colors")
         .output();
-    
+
     // Parse output from tput
     let available_colors = match tput_output {
         Ok(o) => match String::from_utf8(o.stdout) {
@@ -74,7 +74,7 @@ fn get_default_color_mode() -> TermColorMode {
         }
         Err(_) => 8   // Command failed
     };
-    
+
     // Determine color mode
     let auto_color_mode = if available_colors >= 256 {
         TermColorMode::C256
@@ -146,7 +146,7 @@ fn main() {
     // Initial terminal which is basically only used to print the usage
     // if argument parsing fails. Uses 'auto' color mode.
     let mut initial_terminal = ColorTerminal::new(default_color_mode);
-    
+
     let arg_template = ArgTemplate::new()
         .set_usage_header("rehearse - Expectation testing tool")
         .add_argument(Arg::new(ARG_HELP, "Prints this help text").short("-h"))
@@ -240,7 +240,7 @@ fn main() {
         .map(|arg| discover_test_cases(arg, &default_test_options))
         .flatten()
         .collect::<Vec<_>>();
-    
+
     // Run Tests!
     tokio_runtime.block_on(process_test_cases(test_cases, terminal.clone()));
 }

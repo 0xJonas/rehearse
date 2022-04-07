@@ -8,4 +8,4 @@ mod error;
 pub use char_source::CharSource;
 pub use proto_grapheme_source::ProtoGraphemeSource;
 pub use grapheme_source::{GraphemeSource, Grapheme};
-pub use error::ParseError;
+pub use error::{ParseError, ParseErrorVariant, CursorPosition};

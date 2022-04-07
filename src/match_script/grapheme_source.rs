@@ -9,6 +9,7 @@ use tokio::io::AsyncReadExt;
 /// A Grapheme represents a single atomic part of a MatchScript file.
 /// It can either by a single character or a Matcher that matches
 /// a sequence of characters.
+#[derive(Debug)]
 pub enum Grapheme {
     Char(char),
     Matcher(Box<dyn Matcher>)
@@ -39,9 +40,15 @@ impl<R: AsyncReadExt + Unpin> GraphemeSource<R> {
         }
     }
 
-    /// Returns true is all Graphemes from this GraphemeSource have been read.
+    /// Returns true if all Graphemes from this GraphemeSource have been read.
     pub fn is_end_of_input(&self) -> bool {
         self.proto_grapheme_source.is_end_of_input()
+    }
+
+    /// Gets a tuple of the form `(byte_offset, char_offset)` which serves as a checkpoint
+    /// when locating data in the original artifact file.
+    pub fn get_input_checkpoint(&self) -> (usize, usize) {
+        self.proto_grapheme_source.get_input_checkpoint()
     }
 
     /// Reads Graphemes into the given `out_buffer`.

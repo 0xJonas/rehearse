@@ -1,14 +1,12 @@
 use std::hash::Hash;
-use std::collections::HashMap;
 
 struct PQueueSlot<T> {
     priority: isize,
     data: T
 }
 
-pub struct PriorityQueue<T: Hash + Eq + Clone> {
-    content: Vec<PQueueSlot<T>>,
-    slot_index: HashMap<T, usize>
+pub struct PriorityQueue<T: PartialEq> {
+    content: Vec<PQueueSlot<T>>
 }
 
 #[derive(Debug, PartialEq)]
@@ -18,39 +16,16 @@ pub enum InsertOrDecreaseResult {
     Ignored
 }
 
-impl<T: Hash + Eq + Clone> PriorityQueue<T> {
+impl<T: PartialEq> PriorityQueue<T> {
 
     /// Creates a new empty PriorityQueue.
-    /// 
-    /// # Examples
-    /// 
-    /// ```
-    /// # use rehearse::priority_queue::PriorityQueue;
-    /// let pqueue = PriorityQueue::<isize>::new();
-    /// 
-    /// assert_eq!(pqueue.len(), 0);
-    /// ```
     pub fn new() -> PriorityQueue<T> {
         PriorityQueue {
-            content: Vec::new(),
-            slot_index: HashMap::new()
+            content: Vec::new()
         }
     }
 
     /// Returns the current length of the PriorityQueue.
-    /// 
-    /// # Examples
-    /// 
-    /// ```
-    /// # use rehearse::priority_queue::PriorityQueue;
-    /// let mut pqueue = PriorityQueue::<&str>::new();
-    /// 
-    /// pqueue.insert_or_decrease("a", 5);
-    /// pqueue.insert_or_decrease("b", 3);
-    /// pqueue.insert_or_decrease("c", 4);
-    /// 
-    /// assert_eq!(pqueue.len(), 3);
-    /// ```
     pub fn len(&self) -> usize {
         self.content.len()
     }
@@ -59,8 +34,6 @@ impl<T: Hash + Eq + Clone> PriorityQueue<T> {
     /// the min-heap property is satisfied.
     fn move_up(&mut self, index: usize) -> () {
         if index == 0 {
-            let new_val = &self.content[0];
-            self.slot_index.insert(new_val.data.clone(), 0);
             return;
         }
 
@@ -69,12 +42,9 @@ impl<T: Hash + Eq + Clone> PriorityQueue<T> {
             self.content.swap(index, parent_index);
 
             // Scary tail-call, but this makes the function nicer and the variables immutable.
-            // And if this ever busts the stack we'd already have an impossible large heap anyways.
+            // And if this ever busts the stack we'd already have an impossibly large heap anyways.
             // Size of heap ~= 2^(size of stack)
             self.move_up(parent_index);
-        } else {
-            let new_val = &self.content[index];
-            self.slot_index.insert(new_val.data.clone(), index);
         }
     }
 
@@ -90,31 +60,26 @@ impl<T: Hash + Eq + Clone> PriorityQueue<T> {
         } else if left_child < len {
             left_child
         } else {
-            self.slot_index.insert(self.content[index].data.clone(), index);
             return;
         };
 
         if vec[smallest_child].priority < vec[index].priority {
             vec.swap(index, smallest_child);
             self.move_down(smallest_child);
-        } else {
-            self.slot_index.insert(self.content[index].data.clone(), index);
         }
     }
 
-    /// Inserts `elem` into the PriorityQueue with priority `priority`. 
+    /// Inserts `elem` into the PriorityQueue with priority `priority`.
     /// `elem` must not already be in the queue.
-    /// 
+    ///
     /// # Panics
-    /// 
+    ///
     /// Panics if the element was already in the queue.
-    fn insert(&mut self, elem: T, priority: isize) -> () {
-        assert!(self.slot_index.get(&elem).is_none());
-
+    fn insert(&mut self, data: T, priority: isize) -> () {
         let len = self.content.len();
         self.content.push(PQueueSlot {
-            priority: priority,
-            data: elem
+            priority,
+            data
         });
 
         // Moving up will also add the new element to slot_index
@@ -124,22 +89,6 @@ impl<T: Hash + Eq + Clone> PriorityQueue<T> {
     /// Returns a reference to the the element with the lowest priority,
     /// without removing it from the PriorityQueue. Returns `None` if
     /// the PriorityQueue is empty.
-    /// 
-    /// # Examples
-    /// 
-    /// ```
-    /// # use rehearse::priority_queue::PriorityQueue;
-    /// let mut pqueue = PriorityQueue::<&str>::new();
-    /// 
-    /// assert_eq!(pqueue.peek_min(), None);
-    /// 
-    /// pqueue.insert_or_decrease("a", 5);
-    /// pqueue.insert_or_decrease("b", 3);
-    /// pqueue.insert_or_decrease("c", 4);
-    /// 
-    /// assert_eq!(pqueue.peek_min(), Some(&"b"));
-    /// assert_eq!(pqueue.len(), 3);
-    /// ```
     pub fn peek_min(&self) -> Option<&T> {
         match self.content.get(0) {
             Some(v) => Some(&v.data),
@@ -149,28 +98,11 @@ impl<T: Hash + Eq + Clone> PriorityQueue<T> {
 
     /// Returns and removes the element with the lowest priority from
     /// the PriorityQueue. Returns `None` if the queue is empty.
-    /// 
-    /// # Examples
-    /// 
-    /// ```
-    /// # use rehearse::priority_queue::PriorityQueue;
-    /// let mut pqueue = PriorityQueue::<&str>::new();
-    /// 
-    /// assert_eq!(pqueue.extract_min(), None);
-    /// 
-    /// pqueue.insert_or_decrease("a", 5);
-    /// pqueue.insert_or_decrease("b", 3);
-    /// pqueue.insert_or_decrease("c", 4);
-    /// 
-    /// assert_eq!(pqueue.extract_min(), Some("b"));
-    /// assert_eq!(pqueue.len(), 2);
-    /// ```
     pub fn extract_min(&mut self) -> Option<T> {
         if self.content.len() == 0 {
             None
         } else {
             let out = self.content.swap_remove(0).data;
-            let _ = self.slot_index.remove(&out);
 
             if self.content.len() > 0 {
                 self.move_down(0);
@@ -180,24 +112,14 @@ impl<T: Hash + Eq + Clone> PriorityQueue<T> {
         }
     }
 
-    /// Returns the index of `val` into the PriorityQueue,
-    /// or `None` if `val` is not in the queue.
-    fn index(&self, val: &T) -> Option<usize> {
-        match self.slot_index.get(val) {
-            Some(&v) => Some(v),
-            None => None
-        }
-    }
-
     /// Reduces the priority for the element at `index` to `new_priority`.
     /// `new_priority` must be smaller than the current priority for the element.
-    /// 
+    ///
     /// # Panics
-    /// 
+    ///
     /// Panics if `index` is out of bounds or if the new priority is
     /// greater than the current priority.
     fn decrease_key(&mut self, index: usize, new_priority: isize) -> () {
-        assert!(index < self.len());
         assert!(self.content[index].priority >= new_priority);
 
         self.content[index].priority = new_priority;
@@ -209,37 +131,27 @@ impl<T: Hash + Eq + Clone> PriorityQueue<T> {
     /// If `elem` is already in the queue, its priority is updated if `priority` is lower than
     /// its current priority, otherwise it is ignored. Whether `elem` was added, decreased or
     /// ignored is indicated by the return value.
-    /// 
-    /// # Examples
-    /// 
-    /// ```
-    /// # use rehearse::priority_queue::{PriorityQueue, InsertOrDecreaseResult};
-    /// let mut pqueue = PriorityQueue::<&str>::new();
-    /// 
-    /// assert_eq!(pqueue.insert_or_decrease("a", 5), InsertOrDecreaseResult::Inserted);
-    /// assert_eq!(pqueue.insert_or_decrease("a", 6), InsertOrDecreaseResult::Ignored);
-    /// assert_eq!(pqueue.insert_or_decrease("a", 4), InsertOrDecreaseResult::Decreased);
-    /// ```
     pub fn insert_or_decrease(&mut self, elem: T, priority: isize) -> InsertOrDecreaseResult {
-        match self.index(&elem) {
-            Some(index) => if self.content[index].priority > priority {
-                self.decrease_key(index, priority);
-                return InsertOrDecreaseResult::Decreased;
-            } else {
+        for (i, slot) in self.content.iter().enumerate() {
+            if slot.data == elem {
+                if slot.priority > priority {
+                    self.decrease_key(i, priority);
+                    return InsertOrDecreaseResult::Decreased;
+                }
                 return InsertOrDecreaseResult::Ignored;
-            },
-            None => {
-                self.insert(elem, priority);
-                return InsertOrDecreaseResult::Inserted;
             }
         }
+
+        // Element not found, insert.
+        self.insert(elem, priority);
+        return InsertOrDecreaseResult::Inserted;
     }
 }
 
 #[cfg(test)]
 mod test {
 
-    use crate::priority_queue::PriorityQueue;
+    use super::PriorityQueue;
     use quickcheck_macros::quickcheck;
 
     #[quickcheck]

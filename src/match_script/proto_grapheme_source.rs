@@ -58,6 +58,12 @@ impl<R: AsyncReadExt + Unpin> ProtoGraphemeSource<R> {
         self.source.is_end_of_input() && self.buffer_pos >= self.buffer_content_len
     }
 
+    /// Gets a tuple of the form `(byte_offset, char_offset)` which serves as a checkpoint
+    /// when locating data in the original artifact file.
+    pub fn get_input_checkpoint(&self) -> (usize, usize) {
+        self.source.get_input_offsets()
+    }
+
     /// Refills the internal buffer by discarding already read data and
     /// filling the remaining space with new data.
     ///
