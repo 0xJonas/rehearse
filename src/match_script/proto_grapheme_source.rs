@@ -1,7 +1,10 @@
-use crate::match_script::error::{ParseError, CursorPosition};
-use crate::match_script::char_source::CharSource;
+use crate::match_script::{
+    InputCheckpoint,
+    char_source::CharSource,
+    error::{ParseError, CursorPosition}
+};
 
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
 use std::iter::FromIterator;
 
@@ -22,7 +25,7 @@ pub enum ProtoGrapheme {
 }
 
 /// Iterator-like object which creates the first stage of Graphemes from a data source.
-pub struct ProtoGraphemeSource<R: AsyncReadExt + Unpin> {
+pub struct ProtoGraphemeSource<R: AsyncReadExt + AsyncSeekExt + Unpin> {
     buffer: Vec<char>,
     buffer_pos: usize,
     buffer_content_len: usize,
@@ -31,7 +34,7 @@ pub struct ProtoGraphemeSource<R: AsyncReadExt + Unpin> {
     position: CursorPosition
 }
 
-impl<R: AsyncReadExt + Unpin> ProtoGraphemeSource<R> {
+impl<R: AsyncReadExt + AsyncSeekExt + Unpin> ProtoGraphemeSource<R> {
 
     /// Creates a new `ProtoGraphemeIterator` from the given `AsyncCharSource`,
     /// which parses using `delimiter_tag` and has an internal buffer size of `char_buffer_size`.
@@ -60,8 +63,8 @@ impl<R: AsyncReadExt + Unpin> ProtoGraphemeSource<R> {
 
     /// Gets a tuple of the form `(byte_offset, char_offset)` which serves as a checkpoint
     /// when locating data in the original artifact file.
-    pub fn get_input_checkpoint(&self) -> (usize, usize) {
-        self.source.get_input_offsets()
+    pub fn get_input_checkpoint(&self) -> InputCheckpoint {
+        self.source.get_input_checkpoint()
     }
 
     /// Refills the internal buffer by discarding already read data and
@@ -201,13 +204,22 @@ impl<R: AsyncReadExt + Unpin> ProtoGraphemeSource<R> {
         }
         return Ok(proto_graphemes_read);
     }
+
+    /// Rewinds or forwards the `ProtoGraphemeSource` to a previously recorded `checkpoint`.
+    pub async fn seek(&mut self, checkpoint: &InputCheckpoint) -> std::io::Result<()> {
+        self.source.seek(checkpoint).await?;
+        self.buffer_pos = 0;
+        self.buffer_content_len = 0;
+        self.position = checkpoint.position.to_owned();
+        return Ok(());
+    }
 }
 
 #[cfg(test)]
 mod tests {
 
     use super::{CharSource, ProtoExpression, ProtoGrapheme, ProtoGraphemeSource};
-    use crate::match_script::error::CursorPosition;
+    use crate::match_script::{error::CursorPosition, InputCheckpoint};
     use quickcheck::{Arbitrary, Gen};
     use quickcheck_macros::quickcheck;
     use encoding_rs::UTF_8;
@@ -292,5 +304,38 @@ mod tests {
                 false
             }
         });
+    }
+
+    #[tokio::test]
+    async fn proto_grapheme_source_can_seek_to_checkpoint() -> () {
+        let input = "012{|345|}6789";
+        let cursor = Cursor::new(input);
+        let char_source = CharSource::new(UTF_8, cursor, "proto_grapheme_source_can_seek_to_checkpoint", 1000 * 4);
+        let mut proto_grapheme_source = ProtoGraphemeSource::new(char_source, "", 1000);
+        let mut output = Vec::with_capacity(4);
+        output.resize(4, ProtoGrapheme::Char('\0'));
+
+        proto_grapheme_source.read_proto_graphemes(&mut output).await.unwrap();
+        assert_eq!(output[..3], vec![ProtoGrapheme::Char('0'), ProtoGrapheme::Char('1'), ProtoGrapheme::Char('2')]);
+        match &output[3] {
+            ProtoGrapheme::ProtoExpression(expr) => {
+                assert_eq!(expr.expr, "345");
+                assert_eq!(expr.position, CursorPosition { line: 0, col: 5 });
+            },
+            _ => assert!(false)
+        };
+
+        let checkpoint = InputCheckpoint { byte_offset: 10, char_offset: 10, position: CursorPosition { line: 0, col: 10 }};
+
+        proto_grapheme_source.read_proto_graphemes(&mut output).await.unwrap();
+        assert_eq!(output, vec![ProtoGrapheme::Char('6'), ProtoGrapheme::Char('7'), ProtoGrapheme::Char('8'), ProtoGrapheme::Char('9')]);
+        assert!(proto_grapheme_source.is_end_of_input());
+
+        proto_grapheme_source.seek(&checkpoint).await.unwrap();
+
+        assert!(!proto_grapheme_source.is_end_of_input());
+        proto_grapheme_source.read_proto_graphemes(&mut output).await.unwrap();
+        assert_eq!(output, vec![ProtoGrapheme::Char('6'), ProtoGrapheme::Char('7'), ProtoGrapheme::Char('8'), ProtoGrapheme::Char('9')]);
+        assert!(proto_grapheme_source.is_end_of_input());
     }
 }

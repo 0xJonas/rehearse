@@ -1,10 +1,11 @@
 use crate::match_script::{
+    InputCheckpoint,
     proto_grapheme_source::{ProtoGrapheme, ProtoGraphemeSource},
     functions::{MSContext, Matcher, add_standard_functions, compile_expression},
     expression_parser::parse_expression,
     error::ParseError
 };
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
 /// A Grapheme represents a single atomic part of a MatchScript file.
 /// It can either by a single character or a Matcher that matches
@@ -18,13 +19,13 @@ pub enum Grapheme {
 /// A GraphemeSource compiles the output of a ProtoGraphemeSource into
 /// a sequence of Graphemes. A GraphemeSource also maintains the
 /// MSContext used to compile the ProtoGraphemes.
-pub struct GraphemeSource<R: AsyncReadExt + Unpin> {
+pub struct GraphemeSource<R: AsyncReadExt + AsyncSeekExt + Unpin> {
     proto_grapheme_source: ProtoGraphemeSource<R>,
     buffer: Vec<ProtoGrapheme>,
     context: MSContext
 }
 
-impl<R: AsyncReadExt + Unpin> GraphemeSource<R> {
+impl<R: AsyncReadExt + AsyncSeekExt + Unpin> GraphemeSource<R> {
 
     /// Creates a new GraphemeSource from the given ProtoGraphemeSource, with a given `buffer_size`
     /// for the internal read buffer.
@@ -47,7 +48,7 @@ impl<R: AsyncReadExt + Unpin> GraphemeSource<R> {
 
     /// Gets a tuple of the form `(byte_offset, char_offset)` which serves as a checkpoint
     /// when locating data in the original artifact file.
-    pub fn get_input_checkpoint(&self) -> (usize, usize) {
+    pub fn get_input_checkpoint(&self) -> InputCheckpoint {
         self.proto_grapheme_source.get_input_checkpoint()
     }
 
@@ -109,6 +110,12 @@ impl<R: AsyncReadExt + Unpin> GraphemeSource<R> {
             }
         }
         return Ok(graphemes_read_total);
+    }
+
+    /// Rewinds or forwards the `GraphemeSource` to a previously recorded `checkpoint`.
+    pub async fn seek(&mut self, checkpoint: &InputCheckpoint) -> std::io::Result<()> {
+        self.proto_grapheme_source.seek(checkpoint).await?;
+        return Ok(());
     }
 }
 

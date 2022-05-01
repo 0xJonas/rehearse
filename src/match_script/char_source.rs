@@ -1,6 +1,11 @@
-use crate::match_script::error::{ParseError, ParseErrorVariant, CursorPosition};
+use std::io::SeekFrom;
 
-use tokio::io::AsyncReadExt;
+use crate::match_script::{
+    InputCheckpoint,
+    error::{ParseError, ParseErrorVariant, CursorPosition}
+};
+
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use encoding_rs::{Encoding, Decoder, DecoderResult};
 
 /// Reads until either the supplied buffer is full, or EOI is reached.
@@ -21,7 +26,7 @@ async fn read_to_buffer<R: AsyncReadExt + Unpin>(buffer: &mut [u8], input: &mut 
 }
 
 /// Data source which decodes an input and returns UTF-8 characters.
-pub struct CharSource<R: AsyncReadExt + Unpin> {
+pub struct CharSource<R: AsyncReadExt + AsyncSeekExt + Unpin> {
     read_buffer: Vec<u8>,
     read_buffer_offset: usize,
     read_buffer_content_len: usize,
@@ -34,7 +39,7 @@ pub struct CharSource<R: AsyncReadExt + Unpin> {
     input_exhausted: bool
 }
 
-impl<R: AsyncReadExt + Unpin> CharSource<R> {
+impl<R: AsyncReadExt + AsyncSeekExt + Unpin> CharSource<R> {
 
     /// Creates a new `AsyncCharSource` from the given `input`, using a `decoder` and a read buffer
     /// of size `buffer_size`.
@@ -60,10 +65,13 @@ impl<R: AsyncReadExt + Unpin> CharSource<R> {
         &self.input_name
     }
 
-    /// Gets the offsets up to which data has been read by the CharSource,
-    /// in the form `(byte_offset, char_offset)`.
-    pub fn get_input_offsets(&self) -> (usize, usize) {
-        (self.byte_offset, self.char_offset)
+    /// Gets the offsets up to which data has been read by the CharSource.
+    pub fn get_input_checkpoint(&self) -> InputCheckpoint {
+        InputCheckpoint {
+            byte_offset: self.byte_offset,
+            char_offset: self.char_offset,
+            position: self.position.clone()
+        }
     }
 
     /// Returns true if all chars from this CharSource have been read.
@@ -135,13 +143,29 @@ impl<R: AsyncReadExt + Unpin> CharSource<R> {
 
         return Ok(out_buffer_offset);
     }
+
+    /// Rewinds or forwards the CharSource to a previously recorded `checkpoint`.
+    pub async fn seek(&mut self, checkpoint: &InputCheckpoint) -> std::io::Result<()> {
+        let new_pos = self.input.seek(SeekFrom::Start(checkpoint.byte_offset as u64)).await?;
+        assert_eq!(new_pos, checkpoint.byte_offset as u64);
+
+        self.read_buffer_offset = 0;
+        self.read_buffer_content_len = 0;
+        self.decoder = self.decoder.encoding().new_decoder();
+        self.position = checkpoint.position.to_owned();
+        self.byte_offset = checkpoint.byte_offset;
+        self.char_offset = checkpoint.char_offset;
+        self.input_exhausted = false;
+
+        return Ok(());
+    }
 }
 
 #[cfg(test)]
 mod tests {
 
     use super::CharSource;
-    use crate::match_script::error::ParseErrorVariant;
+    use crate::match_script::{error::ParseErrorVariant, CursorPosition, InputCheckpoint};
 
     use encoding_rs::UTF_8;
 
@@ -154,7 +178,7 @@ mod tests {
         let mut buffer = ['\0'; 100];
         assert_eq!(source.read_chars(&mut buffer).await.unwrap(), 8);
         assert_eq!(&buffer[..8], vec!['T', 'e', 's', 't', '1', '2', '3', '4']);
-        assert_eq!(source.get_input_offsets(), (8, 8));
+        assert_eq!(source.get_input_checkpoint(), InputCheckpoint { byte_offset: 8, char_offset: 8, position: CursorPosition { line: 0, col: 8 }});
     }
 
     #[tokio::test]
@@ -165,12 +189,12 @@ mod tests {
 
         assert_eq!(source.read_chars(&mut buffer).await.unwrap(), 4);
         assert_eq!(&buffer[..4], vec!['T', 'e', 's', 't']);
-        assert_eq!(source.get_input_offsets(), (4, 4));
+        assert_eq!(source.get_input_checkpoint(), InputCheckpoint { byte_offset: 4, char_offset: 4, position: CursorPosition { line: 0, col: 4 }});
         assert!(!source.is_end_of_input());
 
         assert_eq!(source.read_chars(&mut buffer).await.unwrap(), 4);
         assert_eq!(&buffer[..4], vec!['1', '2', '3', '4']);
-        assert_eq!(source.get_input_offsets(), (8, 8));
+        assert_eq!(source.get_input_checkpoint(), InputCheckpoint { byte_offset: 8, char_offset: 8, position: CursorPosition { line: 0, col: 8 }});
         assert!(source.is_end_of_input());
 
         assert_eq!(source.read_chars(&mut buffer).await.unwrap(), 0);
@@ -184,7 +208,7 @@ mod tests {
 
         assert_eq!(source.read_chars(&mut buffer).await.unwrap(), 6);
         assert_eq!(&buffer[..6], vec!['T', 'e', 's', 't', ' ', '🧪']);
-        assert_eq!(source.get_input_offsets(), (9, 6));
+        assert_eq!(source.get_input_checkpoint(), InputCheckpoint { byte_offset: 9, char_offset: 6, position: CursorPosition { line: 0, col: 6 }});
     }
 
     #[tokio::test]
@@ -197,7 +221,7 @@ mod tests {
         assert_eq!(&buffer[..5], vec!['T', 'e', 's', 't', ' ']);
         assert_eq!(source.read_chars(&mut buffer).await.unwrap(), 1);
         assert_eq!(&buffer[..1], vec!['🧪']);
-        assert_eq!(source.get_input_offsets(), (9, 6));
+        assert_eq!(source.get_input_checkpoint(), InputCheckpoint { byte_offset: 9, char_offset: 6, position: CursorPosition { line: 0, col: 6 }});
     }
 
     #[tokio::test]
@@ -236,5 +260,28 @@ mod tests {
         let position = error.get_position();
         assert_eq!(position.line, 0);
         assert_eq!(position.col, 6);
+    }
+
+    #[tokio::test]
+    async fn char_source_can_seek_to_checkpoints() {
+        let input = Cursor::new("Test 🧪 0123456789");
+        let mut source = CharSource::new(UTF_8, input, "char_source_works_with_multibyte_chars_with_multiple_calls", 10000);
+        let mut buffer = ['\0'; 10];
+
+        assert_eq!(source.read_chars(&mut buffer).await.unwrap(), 7);
+        assert_eq!(&buffer[..7], vec!['T', 'e', 's', 't', ' ', '🧪', ' ']);
+        let checkpoint = source.get_input_checkpoint();
+        assert_eq!(checkpoint, InputCheckpoint { byte_offset: 10, char_offset: 7, position: CursorPosition { line: 0, col: 7 }});
+
+        assert_eq!(source.read_chars(&mut buffer).await.unwrap(), 10);
+        assert_eq!(&buffer[..10], vec!['0', '1', '2', '3', '4', '5', '6', '7', '8', '9']);
+        assert!(source.is_end_of_input());
+
+        source.seek(&checkpoint).await.unwrap();
+
+        assert!(!source.is_end_of_input());
+        assert_eq!(source.read_chars(&mut buffer).await.unwrap(), 10);
+        assert_eq!(&buffer[..10], vec!['0', '1', '2', '3', '4', '5', '6', '7', '8', '9']);
+        assert!(source.is_end_of_input());
     }
 }

@@ -1,39 +1,20 @@
 use encoding_rs::{Encoding, Decoder, DecoderResult};
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
-use crate::match_script::{Grapheme, CharSource, ProtoGraphemeSource, GraphemeSource, ParseError, CursorPosition, ParseErrorVariant};
+use crate::match_script::{
+    InputCheckpoint,
+    Grapheme,
+    CharSource,
+    ProtoGraphemeSource,
+    GraphemeSource,
+    ParseError,
+    CursorPosition,
+    ParseErrorVariant
+};
+
+use super::priority_queue::PriorityQueue;
 
 const READ_BUFFER_SIZE: usize = 1024;
-
-#[derive(Clone, Copy, PartialEq)]
-struct InputCheckpoint(usize, usize);
-
-#[derive(PartialEq)]
-enum DiffAction {
-    // The start of a diff
-    Start,
-
-    // A character was matched (no-op, used if the end of the buffer was hit)
-    Match,
-
-    // A character was added compared to the reference
-    Add,
-
-    // A character was deleted compared to the reference
-    Delete,
-
-    // An expression from the reference did not produce a match
-    DeleteExpr
-}
-
-#[derive(PartialEq)]
-struct DiffNode {
-    offset_ref: u64,
-    offset_test: u64,
-    parent: u32,
-    deviation: i32,
-    action: DiffAction
-}
 
 /// Auxiliary type to manage the parameters for a Differ.
 pub struct DifferParams<'ref_name, 'test_name, 'delimiter_tag, R: AsyncReadExt + Unpin> {
@@ -50,7 +31,7 @@ pub struct DifferParams<'ref_name, 'test_name, 'delimiter_tag, R: AsyncReadExt +
 }
 
 /// Object which manages the reference and test inputs for the Differ.
-struct DiffInput<R: AsyncReadExt + Unpin> {
+struct DiffInput<R: AsyncReadExt + AsyncSeekExt + Unpin> {
     /// Source from which to read the reference Graphemes.
     grapheme_source: GraphemeSource<R>,
 
@@ -95,10 +76,13 @@ struct DiffInput<R: AsyncReadExt + Unpin> {
     test_char_offset: usize
 }
 
-impl<R: AsyncReadExt + Unpin> DiffInput<R> {
+impl<R: AsyncReadExt + AsyncSeekExt + Unpin> DiffInput<R> {
 
     /// Creates a new `DiffInput` from the given `DifferParams`.
-    fn new<'a, 'b, 'c, X: AsyncReadExt + Unpin>(params: DifferParams<'a, 'b, 'c, X>) -> DiffInput<X> {
+    fn new<'a, 'b, 'c, X>(params: DifferParams<'a, 'b, 'c, X>) -> DiffInput<X>
+    where
+        X: AsyncReadExt + AsyncSeekExt + Unpin
+    {
         let char_source = CharSource::new(params.ref_encoding, params.ref_input, params.ref_name, READ_BUFFER_SIZE);
         let proto_grapheme_source = ProtoGraphemeSource::new(char_source, params.delimiter_tag, READ_BUFFER_SIZE);
 
@@ -134,8 +118,10 @@ impl<R: AsyncReadExt + Unpin> DiffInput<R> {
         // Move unprocessed data to the front
         // This removes a contiguous chunk at the beginning of the Vecs.
         let _ = self.ref_buffer.drain(..self.ref_processed_mark);
-        let _ = self.test_buffer.drain(..self.test_char_indices[self.test_processed_mark]);
+        let end_index = self.test_char_indices[self.test_processed_mark];
+        let _ = self.test_buffer.drain(..end_index);
         let _ = self.test_char_indices.drain(..self.test_processed_mark);
+        self.test_char_indices.iter_mut().for_each(|i| *i -= end_index);
         self.ref_processed_mark = 0;
         self.test_processed_mark = 0;
     }
@@ -144,19 +130,26 @@ impl<R: AsyncReadExt + Unpin> DiffInput<R> {
     /// input as needed to fill the newly allocated spaces.
     async fn top_up_ref_buffer(&mut self, new_len: usize) -> Result<(), ParseError> {
         let old_len = self.ref_buffer.len();
+        // Make sure the while loop runs at least once, so the grapheme_source can notice a potential end of input
+        // (Probably only relevent if the input was empty to begin with)
+        let new_len = new_len.max(1);
         let mut graphemes_read = 0;
         self.ref_buffer.resize_with(new_len, || Grapheme::Char('\0'));
 
         while old_len + graphemes_read < self.ref_buffer.len() && !self.grapheme_source.is_end_of_input() {
             // Record checkpoint
-            let (byte_offset, char_offset) = self.grapheme_source.get_input_checkpoint();
-            if self.ref_checkpoints.last().cloned() != Some(InputCheckpoint(byte_offset, char_offset)) {
-                self.ref_checkpoints.push(InputCheckpoint(byte_offset, char_offset));
+            let checkpoint = self.grapheme_source.get_input_checkpoint();
+            if self.ref_checkpoints.last() != Some(&checkpoint) {
+                self.ref_checkpoints.push(checkpoint);
             }
 
             let start_offset = old_len + graphemes_read;
             let end_offset = usize::min(start_offset + READ_BUFFER_SIZE, self.ref_buffer.len());
             graphemes_read += self.grapheme_source.read_graphemes(&mut self.ref_buffer[start_offset..end_offset]).await?;
+        }
+
+        if old_len + graphemes_read < self.ref_buffer.len() {
+            self.ref_buffer.truncate(old_len + graphemes_read);
         }
 
         return Ok(());
@@ -204,6 +197,11 @@ impl<R: AsyncReadExt + Unpin> DiffInput<R> {
             DecoderResult::InputEmpty => bytes_decoded -= strip_len
         };
 
+        // Generate char indices
+        for (i, _) in self.test_buffer[test_buffer_prev_len..].char_indices() {
+            self.test_char_indices.push(i + test_buffer_prev_len);
+        }
+
         // Update offsets
         self.test_byte_offset += bytes_decoded;
         self.test_char_offset += self.test_buffer[test_buffer_prev_len..].chars().count();
@@ -219,7 +217,7 @@ impl<R: AsyncReadExt + Unpin> DiffInput<R> {
         let mut data_offset = self.decode_strip(data)?;
 
         // Decode remaining data
-        while data_offset < data.len() - 3 {
+        while data_offset + 3 < data.len() {
             if self.test_buffer.capacity() - self.test_buffer.len() < 4 {
                 // encoding_rs requires at least 4 bytes of free space or the function will
                 // get stuck.
@@ -260,7 +258,7 @@ impl<R: AsyncReadExt + Unpin> DiffInput<R> {
             // Generate char indices
             let test_char_indices_prev_len = self.test_char_indices.len();
             for (i, _) in self.test_buffer[test_buffer_prev_len..].char_indices() {
-                self.test_char_indices.push(i);
+                self.test_char_indices.push(i + test_buffer_prev_len);
             }
 
             self.test_position.add_string(&self.test_buffer[test_buffer_prev_len..]);
@@ -268,8 +266,13 @@ impl<R: AsyncReadExt + Unpin> DiffInput<R> {
             // Record checkpoint
             self.test_byte_offset += bytes_decoded;
             self.test_char_offset += self.test_char_indices.len() - test_char_indices_prev_len;
-            if self.test_checkpoints.last().cloned() != Some(InputCheckpoint(self.test_byte_offset, self.test_char_offset)) {
-                self.test_checkpoints.push(InputCheckpoint(self.test_byte_offset, self.test_char_offset));
+            let checkpoint = InputCheckpoint {
+                byte_offset: self.test_byte_offset,
+                char_offset: self.test_char_offset,
+                position: self.test_position.clone()
+            };
+            if self.test_checkpoints.last() != Some(&checkpoint) {
+                self.test_checkpoints.push(checkpoint);
             }
         }
 
@@ -292,11 +295,11 @@ mod tests {
 
     use super::{DiffInput, DifferParams};
 
-    fn build_utf_8_input(buffer_size: usize, name: &str, ref_input: &str, test_input: &str) -> DiffInput<Cursor<String>> {
+    fn build_utf_8_params<'a>(buffer_size: usize, name: &'a str, ref_input: &str, test_input: &str) -> DifferParams<'a, 'a, 'static, Cursor<String>> {
         let ref_cursor = Cursor::new(ref_input.to_owned());
         let test_cursor = Cursor::new(test_input.to_owned());
 
-        let params = DifferParams {
+        return DifferParams {
             ref_input: ref_cursor,
             ref_encoding: UTF_8,
             ref_name: name,
@@ -307,13 +310,11 @@ mod tests {
 
             delimiter_tag: "",
             buffer_size
-        };
-
-        return DiffInput::<Cursor<String>>::new(params);
+        }
     }
 
-    fn build_empty_utf_8_input() -> DiffInput<Cursor<String>> {
-        build_utf_8_input(1024, "empty", "", "")
+    fn build_empty_utf_8_params() -> DifferParams<'static, 'static, 'static, Cursor<String>> {
+        build_utf_8_params(1024, "empty", "", "")
     }
 
     fn match_graphemes(graphemes: &[Grapheme], input: &str) -> bool {
@@ -328,7 +329,7 @@ mod tests {
     #[test]
     fn test_push_test_data() -> () {
         let test_input = "test test test test test test test test";
-        let mut input = build_empty_utf_8_input();
+        let mut input = DiffInput::<Cursor<String>>::new(build_empty_utf_8_params());
 
         input.push_test_data(&test_input.as_bytes()[..20]).unwrap();
         assert_eq!(input.test_buffer, &test_input[..20]);
@@ -342,7 +343,7 @@ mod tests {
     #[test]
     fn test_push_test_data_multibyte_char() -> () {
         let test_input = "test test test test🧪test test test test";
-        let mut input = build_empty_utf_8_input();
+        let mut input = DiffInput::<Cursor<String>>::new(build_empty_utf_8_params());
 
         input.push_test_data(&test_input.as_bytes()[..20]).unwrap();
         assert_eq!(input.test_buffer, &test_input[..19]);
@@ -354,7 +355,7 @@ mod tests {
     #[test]
     fn test_push_test_data_encoding_error() -> () {
         let test_input = b"test test test test\xfftest test test test";
-        let mut input = build_empty_utf_8_input();
+        let mut input = DiffInput::<Cursor<String>>::new(build_empty_utf_8_params());
 
         input.push_test_data(&test_input[..20]).unwrap();
         assert_eq!(input.test_buffer.as_bytes(), &test_input[..19]);
@@ -374,7 +375,7 @@ mod tests {
     #[tokio::test]
     async fn test_top_up_ref_buffer() -> () {
         let ref_input =  "ref ref ref ref ref ref ref ref ref ref";
-        let mut input = build_utf_8_input(1024, "test_push_test_data", ref_input, "");
+        let mut input = DiffInput::<Cursor<String>>::new(build_utf_8_params(1024, "test_push_test_data", ref_input, ""));
 
         input.top_up_ref_buffer(20).await.unwrap();
         assert!(match_graphemes(&input.ref_buffer[..20], ref_input));
@@ -388,7 +389,7 @@ mod tests {
     async fn test_discard_processed_data() -> () {
         let ref_input =  "ref ref ref ref ref ref ref ref ref ref";
         let test_input = "test test🧪test test test test test test";
-        let mut input = build_utf_8_input(1024, "test_push_test_data", ref_input, test_input);
+        let mut input = DiffInput::<Cursor<String>>::new(build_utf_8_params(1024, "test_push_test_data", ref_input, test_input));
 
         input.push_test_data(test_input[..29].as_bytes()).unwrap();
         input.top_up_ref_buffer(25).await.unwrap();

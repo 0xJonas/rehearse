@@ -1,8 +1,28 @@
-use std::hash::Hash;
-
 struct PQueueSlot<T> {
     priority: isize,
     data: T
+}
+
+impl<T: Clone> Clone for PQueueSlot<T> {
+
+    fn clone(&self) -> Self {
+        PQueueSlot {
+            priority: self.priority,
+            data: self.data.clone()
+        }
+    }
+}
+
+pub struct PQueueIter<'a, T> {
+    iter: std::slice::Iter<'a, PQueueSlot<T>>
+}
+
+impl<'a, T: 'a> Iterator for PQueueIter<'a, T> {
+    type Item = (&'a T, isize);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.iter.next().map(|v| (&v.data, v.priority))
+    }
 }
 
 pub struct PriorityQueue<T: PartialEq> {
@@ -14,6 +34,13 @@ pub enum InsertOrDecreaseResult {
     Inserted,
     Decreased,
     Ignored
+}
+
+impl<T: Clone + PartialEq> Clone for PriorityQueue<T> {
+
+    fn clone(&self) -> Self {
+        PriorityQueue { content: self.content.clone() }
+    }
 }
 
 impl<T: PartialEq> PriorityQueue<T> {
@@ -89,26 +116,26 @@ impl<T: PartialEq> PriorityQueue<T> {
     /// Returns a reference to the the element with the lowest priority,
     /// without removing it from the PriorityQueue. Returns `None` if
     /// the PriorityQueue is empty.
-    pub fn peek_min(&self) -> Option<&T> {
+    pub fn peek_min(&self) -> Option<(&T, isize)> {
         match self.content.get(0) {
-            Some(v) => Some(&v.data),
+            Some(v) => Some((&v.data, v.priority)),
             None => None
         }
     }
 
     /// Returns and removes the element with the lowest priority from
     /// the PriorityQueue. Returns `None` if the queue is empty.
-    pub fn extract_min(&mut self) -> Option<T> {
+    pub fn extract_min(&mut self) -> Option<(T, isize)> {
         if self.content.len() == 0 {
             None
         } else {
-            let out = self.content.swap_remove(0).data;
+            let out = self.content.swap_remove(0);
 
             if self.content.len() > 0 {
                 self.move_down(0);
             }
 
-            Some(out)
+            Some((out.data, out.priority))
         }
     }
 
@@ -146,6 +173,12 @@ impl<T: PartialEq> PriorityQueue<T> {
         self.insert(elem, priority);
         return InsertOrDecreaseResult::Inserted;
     }
+
+    pub fn iter(&self) -> PQueueIter<T> {
+        PQueueIter {
+            iter: self.content.iter()
+        }
+    }
 }
 
 #[cfg(test)]
@@ -164,10 +197,10 @@ mod test {
         data.iter().for_each(|v| { let _ = pqueue.insert_or_decrease(*v, *v as isize); });
         let len = pqueue.len();
 
-        let mut prev_min = *pqueue.peek_min().unwrap();
+        let mut prev_min = *pqueue.peek_min().unwrap().0;
         for _ in 0..len {
             match pqueue.extract_min() {
-                Some(v) => if v < prev_min {
+                Some((v, _)) => if v < prev_min {
                     return false;
                 } else {
                     prev_min = v;
